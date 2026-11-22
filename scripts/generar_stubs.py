@@ -7,7 +7,8 @@ from grpc_tools import protoc
 
 RAIZ = Path(__file__).resolve().parents[1]
 PROTO = RAIZ / "cupos" / "cupos.proto"
-DESTINOS = (RAIZ / "cupos" / "app", RAIZ / "matriculas" / "app")
+# Cada servicio que habla con Cupos necesita sus propios stubs (se importan como `from . import cupos_pb2`).
+DESTINOS = (RAIZ / "cupos" / "app", RAIZ / "matriculas" / "app", RAIZ / "bff-web" / "app")
 
 
 def generar():

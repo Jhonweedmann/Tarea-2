@@ -3,6 +3,7 @@ import os
 import unittest
 
 os.environ["METRICAS_PUERTO"] = "0"  # no abrir el puerto de métricas durante las pruebas
+os.environ.setdefault("LOG_NIVEL", "CRITICAL")
 
 import httpx  # noqa: E402
 import redis  # noqa: E402

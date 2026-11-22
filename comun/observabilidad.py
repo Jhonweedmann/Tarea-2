@@ -16,6 +16,7 @@ agrupe por la etiqueta `service`.
 import contextvars
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -93,14 +94,14 @@ class FormatoJson(logging.Formatter):
         return json.dumps(datos, ensure_ascii=False, default=str)
 
 
-def configurar_logs(servicio: str, nivel: int = logging.INFO) -> None:
+def configurar_logs(servicio: str) -> None:
     raiz = logging.getLogger()
     if any(isinstance(h.formatter, FormatoJson) for h in raiz.handlers):
         return
     manejador = logging.StreamHandler(sys.stdout)
     manejador.setFormatter(FormatoJson(servicio))
     raiz.addHandler(manejador)
-    raiz.setLevel(nivel)
+    raiz.setLevel(os.getenv("LOG_NIVEL", "INFO").upper())
     # httpx registra cada llamada en INFO; el log "solicitud" de cada servicio ya cubre eso.
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
