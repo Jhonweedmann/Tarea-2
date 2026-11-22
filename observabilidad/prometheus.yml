@@ -1,0 +1,16 @@
+# Scrape cada 5 s: los escenarios de falla duran pocos segundos y con 15 s no se verían.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # El gateway publica métricas en un puerto interno aparte (el 8080 es público).
+  - job_name: gateway
+    static_configs:
+      - targets: ["gateway:9100"]
+
+  # Servicios internos: GET /metrics en el puerto 8000 (comun/observabilidad.py).
+  # Si B agrega métricas a Cupos (gRPC), sumar aquí su target.
+  - job_name: servicios
+    static_configs:
+      - targets: ["bff-web:8000", "orquestador:8000", "inscripcion:8000", "pagos:8000"]

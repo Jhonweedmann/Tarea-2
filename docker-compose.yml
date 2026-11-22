@@ -1,4 +1,85 @@
+# Forma K — Unidad 3. Arquitectura en docs/PLAN.md §1, contratos en docs/contratos/.
+#
+# Solo el gateway publica un puerto (8080). Grafana publica el 3000 solo para la demo.
+# orquestador, inscripcion y pagos corren hoy con los stubs (stubs/); B y C reemplazan cada uno
+# su bloque por la imagen real (ver docs/TRASPASO.md). El resto de este archivo no cambia.
+
+x-healthcheck-http: &healthcheck-http
+  test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+  interval: 5s
+  timeout: 3s
+  retries: 12
+  start_period: 10s
+
 services:
+  # ---------------------------------------------------------------- Persona A: exposición
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      ORQUESTADOR_URL: http://orquestador:8000
+      INSCRIPCION_URL: http://inscripcion:8000
+      BFF_URL: http://bff-web:8000
+      GATEWAY_TIMEOUT_SECONDS: "5"
+      # Debe superar el peor caso de la Saga (timeouts y reintentos del orquestador hacia Pagos).
+      GATEWAY_TIMEOUT_SAGA_SECONDS: "15"
+      RATE_LIMIT_VENTANA_SECONDS: "10"
+      METRICAS_PUERTO: "9100"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      <<: *healthcheck-http
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2)"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      # Los servicios internos no son requisito para arrancar: si no están, el gateway responde 502.
+      bff-web:
+        condition: service_started
+      orquestador:
+        condition: service_started
+      inscripcion:
+        condition: service_started
+
+  bff-web:
+    build:
+      context: .
+      dockerfile: bff-web/Dockerfile
+    environment:
+      INSCRIPCION_URL: http://inscripcion:8000
+      PAGOS_URL: http://pagos:8000
+      CUPOS_GRPC_TARGET: cupos:50051
+      BFF_TIMEOUT_SECONDS: "2"
+    healthcheck: *healthcheck-http
+    depends_on:
+      - cupos
+
+  # ---------------------------------------------------------------- Persona B: Saga
+  orquestador:
+    # TODO(B): reemplazar por la imagen real:
+    #   build: {context: ., dockerfile: orquestador/Dockerfile}
+    #   environment: {ORQUESTADOR_DB: /data/orquestador.db, CUPOS_GRPC_TARGET: cupos:50051,
+    #                 INSCRIPCION_URL: http://inscripcion:8000, PAGOS_URL: http://pagos:8000,
+    #                 REDIS_URL: redis://redis:6379/1}
+    #   volumes: [orquestador_data:/data]
+    build:
+      context: .
+      dockerfile: stubs/Dockerfile
+    environment:
+      STUB_SERVICIO: orquestador
+    healthcheck: *healthcheck-http
+
+  inscripcion:
+    # TODO(B): reemplazar por inscripcion/ (refactor de matriculas/) con su volumen inscripcion_data.
+    build:
+      context: .
+      dockerfile: stubs/Dockerfile
+    environment:
+      STUB_SERVICIO: inscripcion
+    healthcheck: *healthcheck-http
+
   cupos:
     build:
       context: .
@@ -7,31 +88,51 @@ services:
       CUPOS_DB: /data/cupos.db
     volumes:
       - cupos_data:/data
-    # Sin "ports": Cupos solo es alcanzable dentro de la red de Compose.
+    healthcheck:
+      <<: *healthcheck-http
+      test: ["CMD", "python", "-c", "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"]
 
-  matriculas:
+  # ---------------------------------------------------------------- Persona C: Pagos
+  pagos:
+    # TODO(C): reemplazar por pagos/ (BD propia) con su volumen pagos_data.
     build:
       context: .
-      dockerfile: matriculas/Dockerfile
+      dockerfile: stubs/Dockerfile
     environment:
-      MATRICULAS_DB: /data/matriculas.db
-      CUPOS_GRPC_TARGET: cupos:50051
-      GRPC_TIMEOUT_SECONDS: "2"
-      API_TOKEN: desarrollo-seguro
-      API_TOKEN_LECTURA: solo-lectura
-      CACHE_TTL_SECONDS: "30"
-      REDIS_URL: redis://redis:6379/0
-    volumes:
-      - matriculas_data:/data
-    ports:
-      - "8000:8000"
-    depends_on:
-      - cupos
-      - redis
+      STUB_SERVICIO: pagos
+    healthcheck: *healthcheck-http
 
+  # ---------------------------------------------------------------- Plataforma
   redis:
     image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
 
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    volumes:
+      - ./observabilidad/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # Sin "ports": Grafana lo consulta por la red interna. Para depurar: docker compose port / agregar "9090:9090".
+
+  grafana:
+    image: grafana/grafana:13.2.6
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: forma-k
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/forma-k.json
+    volumes:
+      - ./observabilidad/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observabilidad/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  # ---------------------------------------------------------------- Tarea 1 (demo)
   cupos-node-client:
     build:
       context: .
@@ -42,4 +143,3 @@ services:
 
 volumes:
   cupos_data:
-  matriculas_data:
