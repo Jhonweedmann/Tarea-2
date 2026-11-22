@@ -95,7 +95,7 @@ depender de los demás.
 5. Cabeceras comunes: `X-Correlation-Id` (lo genera el gateway) y `X-Client-Id` (lo pone el gateway tras autenticar).
 6. Nombres de métricas: `circuit_state{dep}`, `bulkhead_rejected_total{dep}`, `bulkhead_in_flight{dep}`, `http_request_duration_seconds{service,route}`, `saga_total{resultado}`.
 
-Cada contrato va en `docs/contratos/` (OpenAPI o markdown corto).
+Cada contrato va en `docs/contratos/` (OpenAPI o markdown corto). **Hecho:** borrador de A, a validar por B y C.
 
 ---
 
@@ -108,17 +108,20 @@ en el historial de la Tarea 1, un mismo integrante aparece con dos correos disti
 
 ### Persona A — Exposición y plataforma (Gateway, BFF, observabilidad)
 
-**Carpetas:** `gateway/`, `bff-web/`, `observabilidad/`, `docker-compose.yml`, `README.md`
+**Estado: terminada** (rama `feat/gateway-bff`). Detalle y siguientes pasos en [TRASPASO.md](TRASPASO.md).
+Las rutas públicas quedaron bajo `/api/v1/...` (ADR-003).
 
-- [ ] `gateway/`: proxy FastAPI. Enruta `/api/matriculas/**` al orquestador, `/api/web/**` al BFF y `/api/cursos/**` a Cupos (o vía BFF).
-- [ ] Auth central: mover `bearer_auth` desde `matriculas/app/main.py`. 401/403 en `problem+json`. Los servicios internos dejan de validar el token.
-- [ ] Rate limit por cliente con Redis → `429` + `Retry-After`. Usar un token distinto por cliente para mostrar que el límite es por cliente.
-- [ ] Generar y propagar `X-Correlation-Id`.
-- [ ] `bff-web/`: `GET /web/alumnos/{id}/panel` que junta estudiante e inscripciones (Inscripción), cursos y cupos (Cupos) y cobros (Pagos) en una sola respuesta. Con timeout por llamada y **degradación parcial** (`"pagos": {"disponible": false}`) si Pagos falla.
-- [ ] `docker-compose.yml`: red interna, solo el gateway expuesto, healthchecks y servicios nuevos (Prometheus y Grafana).
-- [ ] `observabilidad/`: `prometheus.yml` y dashboard de Grafana provisionado (paneles: estado del circuito, rechazos del bulkhead, p95 por servicio, sagas por resultado, 429 del gateway).
-- [ ] ADR-006 Gateway y BFF (por qué uno propio y no Kong/Nginx; el gateway no tiene lógica de negocio).
-- [ ] README: cómo levantar el sistema y cómo provocar cada escenario (lo completan B y C con sus comandos).
+**Carpetas:** `gateway/`, `bff-web/`, `observabilidad/`, `comun/`, `stubs/`, `docker-compose.yml`, `README.md`
+
+- [x] `gateway/`: proxy FastAPI. Enruta `/api/matriculas/**` al orquestador, `/api/web/**` al BFF y `/api/cursos/**` a Cupos (o vía BFF).
+- [x] Auth central: mover `bearer_auth` desde `matriculas/app/main.py`. 401/403 en `problem+json`. Los servicios internos dejan de validar el token.
+- [x] Rate limit por cliente con Redis → `429` + `Retry-After`. Usar un token distinto por cliente para mostrar que el límite es por cliente.
+- [x] Generar y propagar `X-Correlation-Id`.
+- [x] `bff-web/`: `GET /web/alumnos/{id}/panel` que junta estudiante e inscripciones (Inscripción), cursos y cupos (Cupos) y cobros (Pagos) en una sola respuesta. Con timeout por llamada y **degradación parcial** (`"pagos": {"disponible": false}`) si Pagos falla.
+- [x] `docker-compose.yml`: red interna, solo el gateway expuesto, healthchecks y servicios nuevos (Prometheus y Grafana).
+- [x] `observabilidad/`: `prometheus.yml` y dashboard de Grafana provisionado (paneles: estado del circuito, rechazos del bulkhead, p95 por servicio, sagas por resultado, 429 del gateway).
+- [x] ADR-006 Gateway y BFF (por qué uno propio y no Kong/Nginx; el gateway no tiene lógica de negocio).
+- [x] README: cómo levantar el sistema y cómo provocar cada escenario (lo completan B y C con sus comandos).
 
 **Evidencia que aporta:** 401 sin token, 429 al superar el límite y panel del BFF con Pagos caído.
 
@@ -183,7 +186,7 @@ eco.
 
 ## 6. Checklist contra la rúbrica
 
-- [ ] Gateway: enruta, autentica y limita · BFF: agrega ≥ 2 servicios (ABET 1)
+- [x] Gateway: enruta, autentica y limita · BFF: agrega ≥ 2 servicios (ABET 1)
 - [ ] Saga: camino feliz y compensación en orden inverso (ABET 1)
 - [ ] Timeout + CB con fallback + Bulkhead sobre Pagos (ABET 1)
 - [ ] Justificación de orquestación vs coreografía y de Saga vs 2PC (ABET 2)

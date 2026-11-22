@@ -1,109 +1,167 @@
-# Forma K — Cursos y Matrículas
+# Forma K — Matrícula en un curso (Unidad 3)
 
-Sistema distribuido de ejemplo para administrar estudiantes, matrículas y cupos. `matriculas` expone una API REST y delega la disponibilidad a `cupos` mediante gRPC. Las bases de datos están deliberadamente separadas.
+Sistema distribuido para matricular estudiantes en cursos. Parte de la Tarea 1 (Matrículas REST +
+Cupos gRPC) y agrega un **API Gateway**, un **BFF web**, una **Saga orquestada** (cupo → cobro →
+inscripción) y **resiliencia** (timeout, circuit breaker y bulkhead) frente a Pagos, que simula
+una pasarela externa frágil. Plan y reparto: [docs/PLAN.md](docs/PLAN.md). Estado y traspaso
+entre integrantes: [docs/TRASPASO.md](docs/TRASPASO.md).
 
-## Instrucciones de ejecución
-
-**Requisito:** Docker con Docker Compose.
-
-Desde la raíz del repositorio:
-
-```bash
-docker compose up --build
+```
+  cliente ──8080──▶ gateway (auth · rate limit por cliente · X-Correlation-Id)
+                       ├──▶ bff-web ──────▶ inscripcion · cupos (gRPC) · pagos   (panel con degradación parcial)
+                       ├──▶ orquestador ──▶ cupos (gRPC) · pagos · inscripcion   (Saga + CB + bulkhead)
+                       └──▶ inscripcion                                          (alta de estudiantes)
+  redis (rate limit + idempotencia) · prometheus · grafana (:3000)
 ```
 
-La API queda disponible en `http://localhost:8000`, con documentación navegable en `/docs` y el contrato en `/openapi.yaml` (es el mismo `matriculas/openapi.yaml`, no uno generado desde el código).
+> **Estado:** gateway, BFF y observabilidad están implementados. `orquestador`, `inscripcion` y
+> `pagos` corren todavía como **stubs** en memoria (`stubs/`) que cumplen los contratos; B y C
+> los reemplazan. Ver [docs/TRASPASO.md](docs/TRASPASO.md).
 
-Solo la API publica un puerto (8000): Cupos y Redis quedan accesibles únicamente dentro de la red de Compose. La composición levanta también Redis, utilizado por las opciones de caché e idempotencia.
+## Cómo levantarlo
 
-Los cursos de ejemplo (`ARQ-101`, `API-201`, `DAT-110`) se cargan al iniciar Cupos. Para partir con las bases vacías: `docker compose down -v`.
+**Requisito:** Docker con Docker Compose. Desde la raíz del repositorio:
 
-### Tokens de desarrollo
+```bash
+docker compose up --build -d
+docker compose ps            # todos "healthy" salvo prometheus y grafana, que no tienen healthcheck
+```
 
-Cabecera `Authorization: Bearer <token>`:
+- API pública: `http://localhost:8080` (único puerto publicado por el sistema).
+- Grafana: `http://localhost:3000` → dashboard **Forma K — Resiliencia y plataforma** (acceso
+  anónimo de lectura; usuario `admin`, contraseña `forma-k` para editar).
+- Para partir de cero: `docker compose down -v`.
 
-| Token | Permite | Sin token o token desconocido | Token válido sin permiso |
+## API pública (gateway)
+
+Contrato completo: [docs/contratos/gateway.md](docs/contratos/gateway.md).
+
+| Ruta | Va a | Para qué |
+|---|---|---|
+| `POST /api/v1/matriculas` (+ `Idempotency-Key`) | orquestador | Ejecuta la Saga de matrícula |
+| `GET /api/v1/sagas/{id}` | orquestador | Estado y pasos de una saga |
+| `POST/GET /api/v1/estudiantes[/{id}]` | inscripcion | Alta y consulta de estudiantes |
+| `GET /api/v1/cursos[/{id}]` | bff-web → cupos | Catálogo con cupos |
+| `GET /api/v1/web/alumnos/{id}/panel` | bff-web | Panel del alumno (inscripción + cupos + pagos) |
+
+**Tokens de desarrollo** (`Authorization: Bearer <token>`). El límite es **por cliente**:
+
+| Token | Cliente | Rol | Límite |
 |---|---|---|---|
-| `desarrollo-seguro` | lectura y escritura | 401 | — |
-| `solo-lectura` | solo `GET` | 401 | 403 |
+| `desarrollo-seguro` | `secretaria` | escritura | 20 / 10 s |
+| `solo-lectura` | `consulta` | solo `GET` | 20 / 10 s |
+| `portal-web` | `portal-web` | escritura | 20 / 10 s |
+| `carga-experimentos` | `experimentos` | escritura | 100 000 / 10 s (pruebas de carga) |
 
-### Ejemplo de uso (curl)
+El estudiante `est-001` (Ana Pérez) viene precargado en el stub de Inscripción, con una
+inscripción y un cobro, para que el panel tenga datos desde el inicio.
+
+Todas las solicitudes del repo también están en [request.http](request.http) (extensión REST
+Client de VS Code).
+
+## Escenarios y evidencia
+
+### Gateway y BFF (A)
+
+**401 sin token, 403 con token de solo lectura:**
 
 ```bash
-curl -X POST http://localhost:8000/v1/estudiantes \
-  -H "Authorization: Bearer desarrollo-seguro" \
-  -H "Content-Type: application/json" \
-  -d '{"nombre": "Ana Perez", "email": "ana@example.com"}'
-
-curl -X POST http://localhost:8000/v1/matriculas \
-  -H "Authorization: Bearer desarrollo-seguro" \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: 7f1c-intento-1" \
-  -d '{"estudiante_id": "<id devuelto>", "curso_id": "ARQ-101"}'
+curl -i http://localhost:8080/api/v1/cursos
+curl -i -X POST http://localhost:8080/api/v1/matriculas -H "Authorization: Bearer solo-lectura" -H "Content-Type: application/json" -d '{}'
 ```
 
-`<id devuelto>` es el `id` que entrega la primera respuesta (la del `POST /v1/estudiantes`).
+**429 al superar el límite, sin afectar a otro cliente** (25 solicitudes de `portal-web` → 20
+responden 200 y 5 responden 429 con `Retry-After`; `secretaria` sigue respondiendo 200):
 
-### Ejemplo de uso (PowerShell)
+```bash
+for i in $(seq 1 25); do curl -s -o /dev/null -w "%{http_code} " -H "Authorization: Bearer portal-web" http://localhost:8080/api/v1/cursos; done; echo
+curl -s -o /dev/null -w "otro cliente: %{http_code}\n" -H "Authorization: Bearer desarrollo-seguro" http://localhost:8080/api/v1/cursos
+```
 
 ```powershell
-$headers = @{ Authorization = 'Bearer desarrollo-seguro' }
-$e = Invoke-RestMethod http://localhost:8000/v1/estudiantes -Method Post -Headers $headers -ContentType application/json -Body '{"nombre":"Ana Perez","email":"ana@example.com"}'
-$m = Invoke-RestMethod http://localhost:8000/v1/matriculas -Method Post -Headers $headers -ContentType application/json -Body "{\"estudiante_id\":\"$($e.id)\",\"curso_id\":\"ARQ-101\"}"
-Invoke-RestMethod "http://localhost:8000/v1/matriculas/$($m.id)/revertir" -Method Post -Headers $headers
+1..25 | ForEach-Object { try { (Invoke-WebRequest http://localhost:8080/api/v1/cursos -Headers @{Authorization='Bearer portal-web'} -UseBasicParsing).StatusCode } catch { [int]$_.Exception.Response.StatusCode } }
 ```
 
-### Otras operaciones
+**Panel del BFF con Pagos caído** (responde `200` con `"pagos": {"disponible": false, ...}` y
+`"degradado": true`; el resto del panel llega completo):
 
 ```bash
-docker compose stop cupos      # demostrar el modo de falla (T7)
-docker compose start cupos
-docker compose --profile demo run --rm cupos-node-client   # cliente Node (O5)
-
-pip install -r requirements-dev.txt
-python -m unittest discover -s tests -v                    # pruebas (O4)
-python docs/experimento_serializacion.py
-python docs/experimento_resiliencia.py --repeticiones 5 --duracion 35
+docker compose stop pagos
+curl -s -H "Authorization: Bearer desarrollo-seguro" http://localhost:8080/api/v1/web/alumnos/est-001/panel
+docker compose start pagos
 ```
 
-En Windows, si usan el entorno virtual del proyecto, antepongan la ruta del intérprete: `.\.venv\Scripts\python` en vez de `python`.
+Pagos lento en vez de caído (el panel igual responde en ~2 s, el tiempo máximo del BFF):
 
-### Demostrar resiliencia (T7)
+```bash
+docker compose exec pagos python -c "import httpx; print(httpx.post('http://localhost:8000/admin/falla', json={'latencia_ms': 5000}).json())"
+docker compose exec pagos python -c "import httpx; print(httpx.post('http://localhost:8000/admin/falla', json={'latencia_ms': 0, 'caido': False}).json())"
+```
 
-Ejecuten `docker compose stop cupos` y luego consulten o creen una matrícula. Durante los primeros ~15 s el canal gRPC sigue intentando conectar y cada llamada agota el deadline de 2 s, por lo que la API responde `504`. Luego el canal marca a Cupos como caído y la API responde `503` en ~10 ms. Al volver Cupos (`docker compose start cupos`) la API responde `200`. Ambos casos de error usan `application/problem+json`.
+**Trazar una solicitud por todos los servicios** con su `X-Correlation-Id` (logs JSON):
 
-Si Redis cae, la consulta de cursos sigue funcionando sin caché. Un `POST /v1/matriculas` con `Idempotency-Key` responde `503`, porque sin Redis no se puede garantizar la idempotencia; sin la clave, la matrícula se procesa normalmente.
+```bash
+curl -s -H "Authorization: Bearer desarrollo-seguro" -H "X-Correlation-Id: demo-1" http://localhost:8080/api/v1/web/alumnos/est-001/panel > /dev/null
+docker compose logs | grep demo-1
+```
 
-## Contratos y decisiones
+### Escenario 1 — matrícula exitosa (B)
 
-- gRPC: [cupos.proto](cupos/cupos.proto)
-- REST: [openapi.yaml](matriculas/openapi.yaml)
-- Decisiones: [ADR](docs/adr)
-- Informe: fuente LaTeX en [informe.tex](docs/informe.tex), compilado en [Informe-Forma-K.pdf](docs/Informe-Forma-K.pdf)
-- Experimentos: [serialización](docs/experimento_serializacion.py) y [resiliencia](docs/experimento_resiliencia.py), con datos crudos en [docs/resultados](docs/resultados)
-- Guion: [guion-video.md](docs/guion-video.md)
+_Pendiente: lo completa B con los comandos para la Saga real (`POST /api/v1/matriculas` →
+`GET /api/v1/sagas/{id}` y estado de las 3 BD)._
 
-## Idempotencia y caché
+### Escenario 2 — falla en el paso 3 con compensación (B)
 
-`POST /v1/matriculas` acepta `Idempotency-Key`; una repetición durante 24 horas devuelve la respuesta guardada en Redis y no ocupa otro cupo. La consulta de curso usa cache-aside en Redis con TTL corto y se invalida al ocupar o liberar.
+_Pendiente: lo completa B (`/admin/falla` en Inscripción → reembolso y liberación del cupo)._
 
-Las representaciones de matrículas incluyen `_links`: una matrícula activa expone la acción `revertir`; una revertida no. Esto evita ofrecer una transición inválida al cliente.
+### Escenario 3 — falla en cascada contenida (C)
 
-## Experimentos
+_Pendiente: lo completa C (línea base, Pagos lento, Pagos caído, recuperación y corrida sin patrón)._
 
-Los comandos para ejecutarlos están en [Instrucciones de ejecución](#instrucciones-de-ejecución). El primero (serialización) no necesita Docker. El segundo (resiliencia) necesita el sistema levantado: detiene y reinicia el contenedor de Cupos en cada repetición.
+## Observabilidad
 
-Resultados en §10 del informe:
-
-- **Serialización:** un `Curso` pesa 39 bytes en protobuf y 94 en JSON; con gzip la ventaja baja de 0,40 a 0,73–0,85.
-- **Resiliencia:** con Cupos detenido la API responde 504 durante 20,0 s y luego 503 en unos 9 ms.
+- Cada servicio usa [`comun/observabilidad.py`](comun/observabilidad.py): logs JSON con
+  `correlation_id` (y `saga_id` cuando aplica), propagación de `X-Correlation-Id` / `X-Client-Id`
+  a HTTP y gRPC, y las métricas `http_request_duration_seconds` y `http_requests_total`.
+- Prometheus ([observabilidad/prometheus.yml](observabilidad/prometheus.yml)) recolecta cada 5 s.
+  No publica puerto; Grafana lo consulta por la red interna.
+- Dashboard provisionado: [observabilidad/grafana/dashboards/forma-k.json](observabilidad/grafana/dashboards/forma-k.json).
+  Los paneles de circuito, bulkhead y sagas muestran "No data" hasta que B y C emitan esas
+  métricas (nombres en [docs/contratos/README.md](docs/contratos/README.md#métricas)).
 
 ## Pruebas
 
-`tests/test_api.py` son pruebas de contrato: ejecutan la API real (con Cupos y Redis simulados) y validan cada respuesta contra `matriculas/openapi.yaml`, tanto el código de estado declarado como el esquema con `additionalProperties: false`. El comando para correrlas está en [Instrucciones de ejecución](#instrucciones-de-ejecución).
+```bash
+pip install -r requirements-dev.txt
+python -m unittest discover -s tests -v
+```
 
-Los stubs Python de gRPC (`cupos_pb2*.py`) no se versionan. Los Dockerfiles los generan desde `cupos/cupos.proto` y, en local, las pruebas los regeneran automáticamente (o manualmente con `python scripts/generar_stubs.py`).
+En Windows con el entorno virtual del proyecto: `.\.venv\Scripts\python` en vez de `python`.
+
+| Archivo | Qué prueba |
+|---|---|
+| `tests/test_gateway.py` | auth 401/403, rate limit por cliente y fail-open sin Redis, reenvío y cabeceras, `Location` público, 502/504, rechazo de `..` |
+| `tests/test_bff.py` | panel completo, degradación con Pagos caído/lento/503 y con Cupos caído, 404/503/504 del estudiante |
+| `tests/test_api.py`, `test_contracts.py`, `test_cupos.py` | servicios de la Tarea 1 (B los adapta al refactor de Matrículas → Inscripción) |
+
+Los stubs Python de gRPC (`cupos_pb2*.py`) no se versionan: los Dockerfiles los generan desde
+`cupos/cupos.proto` y las pruebas los regeneran con `scripts/generar_stubs.py`.
+
+## Contratos y decisiones
+
+- Contratos entre servicios: [docs/contratos](docs/contratos)
+- gRPC: [cupos/cupos.proto](cupos/cupos.proto)
+- Decisiones: [docs/adr](docs/adr) — ADR-001 a ADR-005 vienen de la Tarea 1;
+  [ADR-006](docs/adr/ADR-006-gateway-bff.md) Gateway y BFF.
+
+## Antecedentes (Tarea 1)
+
+`matriculas/` (REST) y `cupos/` (gRPC) son el punto de partida; su contrato REST sigue en
+[matriculas/openapi.yaml](matriculas/openapi.yaml) hasta que B lo convierta en `inscripcion/`.
+Datos crudos de sus experimentos en [docs/resultados](docs/resultados). El cliente Node de gRPC
+sigue disponible con `docker compose --profile demo run --rm cupos-node-client`.
 
 ## Uso de IA
 
-Se usó asistencia de IA para estructurar código, contratos y documentación. El equipo debe revisar el código generado, ejecutar pruebas y explicar las decisiones y resultados del experimento.
+Se usó asistencia de IA para estructurar código, contratos y documentación. El equipo debe revisar
+el código generado, ejecutar pruebas y explicar las decisiones y resultados de los experimentos.
