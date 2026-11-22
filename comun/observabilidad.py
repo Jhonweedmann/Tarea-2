@@ -101,6 +101,8 @@ def configurar_logs(servicio: str, nivel: int = logging.INFO) -> None:
     manejador.setFormatter(FormatoJson(servicio))
     raiz.addHandler(manejador)
     raiz.setLevel(nivel)
+    # httpx registra cada llamada en INFO; el log "solicitud" de cada servicio ya cubre eso.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def obtener_logger(servicio: str) -> logging.Logger:
