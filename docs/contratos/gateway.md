@@ -35,7 +35,12 @@ no justifica cortar el sistema entero si Redis cae.
 
 El gateway no tiene lógica de negocio: solo autentica, limita y reenvía. Método, cuerpo, query
 string e `Idempotency-Key` pasan sin cambios. Quita `Authorization` y cualquier `X-Client-Id`
-que mande el cliente, y agrega `X-Client-Id`, `X-Correlation-Id` y `X-Forwarded-For`.
+que mande el cliente, y agrega `X-Client-Id`, `X-Correlation-Id`, `X-Forwarded-For` y
+`X-Forwarded-Prefix: /api/v1`.
+
+En la respuesta, el gateway traduce la cabecera `Location` de la ruta interna a la pública
+(`/sagas/abc` → `/api/v1/sagas/abc`). El cuerpo no se toca: si un servicio devuelve enlaces
+(`_links`), debe armarlos anteponiendo `X-Forwarded-Prefix` cuando viene.
 
 | Ruta pública | Servicio | Ruta interna | Timeout |
 |---|---|---|---|

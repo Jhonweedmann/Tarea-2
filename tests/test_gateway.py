@@ -120,10 +120,11 @@ class GatewayTest(unittest.TestCase):
                               json={"estudiante_id": "est-001", "curso_id": "ARQ-101"})
         self.assertEqual(r.status_code, 201)
         self.assertEqual(r.json(), {"saga_id": "s1"})
-        self.assertEqual(r.headers["Location"], "/sagas/s1")
+        self.assertEqual(r.headers["Location"], "/api/v1/sagas/s1")  # traducido a la ruta pública
         enviada = self.recibidas[0]
         self.assertEqual(str(enviada.url), "http://orquestador:8000/matriculas")
         self.assertEqual(enviada.headers["Idempotency-Key"], "k-1")
+        self.assertEqual(enviada.headers["X-Forwarded-Prefix"], "/api/v1")
         self.assertEqual(enviada.content, b'{"estudiante_id":"est-001","curso_id":"ARQ-101"}')
 
     def test_tabla_de_rutas(self):

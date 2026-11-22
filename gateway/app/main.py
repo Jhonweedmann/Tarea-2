@@ -42,6 +42,7 @@ TIMEOUT = float(os.getenv("GATEWAY_TIMEOUT_SECONDS", "5"))
 # La saga hace 3 llamadas con timeouts y reintentos propios: el gateway debe esperar más que eso.
 TIMEOUT_SAGA = float(os.getenv("GATEWAY_TIMEOUT_SAGA_SECONDS", "15"))
 
+PREFIJO_PUBLICO = "/api/v1"
 # Orden: del prefijo más específico al más general.
 RUTAS = (
     Ruta("/api/v1/matriculas", "orquestador", ORQUESTADOR, "/matriculas", TIMEOUT_SAGA),
@@ -70,7 +71,7 @@ METODOS_LECTURA = {"GET", "HEAD", "OPTIONS"}
 EXCLUIDAS_SOLICITUD = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
     "transfer-encoding", "upgrade", "host", "content-length", "authorization",
-    "x-client-id", "x-correlation-id", "x-forwarded-for",
+    "x-client-id", "x-correlation-id", "x-forwarded-for", "x-forwarded-prefix",
 }
 # httpx ya descomprimió el cuerpo, así que content-encoding/length del servicio ya no aplican.
 EXCLUIDAS_RESPUESTA = {"connection", "keep-alive", "transfer-encoding", "content-encoding", "content-length",
@@ -116,6 +117,15 @@ def buscar_ruta(path: str) -> Ruta | None:
         if path == ruta.prefijo or path.startswith(ruta.prefijo + "/"):
             return ruta
     return None
+
+
+def location_publica(location: str, origen: Ruta) -> str:
+    """Traduce un Location interno (/sagas/1) a la ruta pública (/api/v1/sagas/1), como `proxy_redirect` en Nginx."""
+    for ruta in RUTAS:
+        if ruta.destino == origen.destino and (location == ruta.prefijo_interno
+                                               or location.startswith(ruta.prefijo_interno + "/")):
+            return ruta.prefijo + location[len(ruta.prefijo_interno):]
+    return location
 
 
 def autenticar(request: Request) -> tuple[dict | None, JSONResponse | None]:
@@ -178,6 +188,8 @@ async def reenviar(request: Request, resto: str):
     cabeceras += list(cabeceras_salientes().items())
     if request.client:
         cabeceras.append(("X-Forwarded-For", request.client.host))
+    # Para que el servicio arme `_links` con la ruta pública (p. ej. /api/v1/sagas/{id}).
+    cabeceras.append(("X-Forwarded-Prefix", PREFIJO_PUBLICO))
 
     try:
         respuesta = await request.app.state.http.request(
@@ -194,6 +206,9 @@ async def reenviar(request: Request, resto: str):
                        cabeceras_limite)
 
     salida = {k: v for k, v in respuesta.headers.items() if k.lower() not in EXCLUIDAS_RESPUESTA}
+    if "location" in respuesta.headers:
+        salida = {k: v for k, v in salida.items() if k.lower() != "location"}
+        salida["Location"] = location_publica(respuesta.headers["location"], ruta)
     salida.update(cabeceras_limite)
     return Response(content=respuesta.content, status_code=respuesta.status_code, headers=salida)
 

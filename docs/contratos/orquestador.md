@@ -45,6 +45,10 @@ Representación de la saga (también la de `GET /sagas/{id}`):
 }
 ```
 
+`Location` y `_links`: el servicio usa su ruta interna en `Location` (el gateway la traduce) y
+antepone `X-Forwarded-Prefix` (si viene) en los `href` de `_links`, para que el cliente reciba
+`/api/v1/sagas/…`.
+
 Estados: `INICIADA`, `CUPO_RESERVADO`, `PAGO_COBRADO`, `COMPLETADA`, `COMPENSANDO`, `COMPENSADA`,
 `COMPENSACION_PENDIENTE`, `ABORTADA_SIN_CUPO`, `ABORTADA_PAGOS_NO_DISPONIBLE`.
 Los pasos de compensación se agregan a `pasos` con nombres `reembolsar`, `liberar_cupo`, `dar_baja`.
