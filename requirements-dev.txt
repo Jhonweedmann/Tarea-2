@@ -1,5 +1,8 @@
 -r cupos/requirements.txt
 -r matriculas/requirements.txt
+-r gateway/requirements.txt
+-r bff-web/requirements.txt
+-r stubs/requirements.txt
 PyYAML==6.0.3
 reportlab==4.4.10
 httpx==0.28.1
