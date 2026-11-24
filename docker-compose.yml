@@ -72,7 +72,17 @@ services:
       # Timeout de cada llamada de la Saga (peor caso ~14 s, bajo los 15 s del gateway).
       CUPOS_TIMEOUT_SECONDS: "2"
       INSCRIPCION_TIMEOUT_SECONDS: "2"
-      PAGOS_TIMEOUT_SECONDS: "2"
+      PAGOS_TIMEOUT_SECONDS: ${PAGOS_TIMEOUT_SECONDS:-2}
+      RESILIENCIA: ${RESILIENCIA:-on}
+      PAGOS_CONNECT_TIMEOUT_SECONDS: "1"
+      PAGOS_REINTENTOS: "1"
+      PAGOS_BACKOFF_BASE_SECONDS: "0.2"
+      PAGOS_BULKHEAD_MAX: ${PAGOS_BULKHEAD_MAX:-5}
+      PAGOS_CB_UMBRAL: "0.5"
+      PAGOS_CB_MIN_LLAMADAS: "5"
+      PAGOS_CB_VENTANA_SECONDS: "10"
+      PAGOS_CB_ESPERA_SECONDS: "5"
+      PAGOS_CB_EXITOS_CIERRE: "2"
     volumes:
       - orquestador_data:/data
     healthcheck: *healthcheck-http
@@ -111,12 +121,13 @@ services:
 
   # ---------------------------------------------------------------- Persona C: Pagos
   pagos:
-    # TODO(C): reemplazar por pagos/ (BD propia) con su volumen pagos_data.
     build:
       context: .
-      dockerfile: stubs/Dockerfile
+      dockerfile: pagos/Dockerfile
     environment:
-      STUB_SERVICIO: pagos
+      PAGOS_DB: /data/pagos.db
+    volumes:
+      - pagos_data:/data
     healthcheck: *healthcheck-http
 
   # ---------------------------------------------------------------- Plataforma
