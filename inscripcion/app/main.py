@@ -24,10 +24,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from comun.observabilidad import instrumentar, obtener_logger
 
-from .database import connect
+from .database import connect, seed
 from .fallas import instalar_fallas
 
 DB_PATH = os.getenv("INSCRIPCION_DB", "/data/inscripcion.db")
+# Precarga est-001 (Ana Pérez) para la demo. Las pruebas lo apagan para partir de una BD vacía.
+SEMILLA = os.getenv("INSCRIPCION_SEMILLA", "1") == "1"
 CONTRATO = Path(__file__).resolve().parents[1] / "openapi.yaml"
 TITULOS = {
     400: "Solicitud inválida", 404: "Recurso no encontrado", 405: "Método no permitido", 409: "Conflicto",
@@ -38,6 +40,8 @@ TITULOS = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.db = connect(DB_PATH)
+    if SEMILLA:
+        seed(app.state.db)
     # FastAPI atiende los endpoints sincronos en varios hilos. Este lock hace que "leer si ya
     # existe y luego escribir" sea atomico en inscribir y dar de baja (sin carreras entre reintentos).
     app.state.lock = threading.Lock()

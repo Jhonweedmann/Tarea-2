@@ -16,6 +16,7 @@ class ApiContratoTests(unittest.TestCase):
     def setUp(self):
         self.directorio = tempfile.TemporaryDirectory()
         main.DB_PATH = f"{self.directorio.name}/inscripcion.db"
+        main.SEMILLA = False
         self.client = TestClient(main.app)
         self.client.__enter__()
 
@@ -59,6 +60,17 @@ class ApiContratoTests(unittest.TestCase):
         r = self.client.post("/estudiantes", json={"nombre": "Otra", "email": "ana@example.com"})
         self.cumple_contrato(r, "/estudiantes", "post")
         self.assertEqual(r.status_code, 409)
+
+    def test_semilla_precarga_est_001_una_sola_vez(self):
+        self.client.__exit__(None, None, None)
+        main.SEMILLA = True
+        for _ in range(2):  # reiniciar el servicio no duplica la semilla
+            with TestClient(main.app) as client:
+                r = client.get("/estudiantes/est-001")
+                self.assertEqual(self.cumple_contrato(r, "/estudiantes/{estudiante_id}", "get")["nombre"], "Ana Pérez")
+                self.assertEqual(client.get("/estudiantes").json()["total"], 1)
+        main.SEMILLA = False
+        self.client.__enter__()
 
     def test_estudiante_inexistente_responde_404(self):
         r = self.client.get("/estudiantes/no-existe")

@@ -25,3 +25,9 @@ def connect(path: str) -> sqlite3.Connection:
     )
     db.commit()
     return db
+
+
+def seed(db: sqlite3.Connection) -> None:
+    """Estudiante de demostracion que usan el README, request.http y el panel del BFF."""
+    db.execute("INSERT OR IGNORE INTO estudiantes VALUES ('est-001', 'Ana Pérez', 'ana@example.com')")
+    db.commit()
