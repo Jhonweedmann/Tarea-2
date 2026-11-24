@@ -17,7 +17,7 @@ class ContractTests(unittest.TestCase):
         service = cupos_pb2.DESCRIPTOR.services_by_name["Cupos"]
         self.assertEqual(
             {method.name for method in service.methods},
-            {"ConsultarCurso", "ListarCursos", "OcuparCupo", "LiberarCupo"},
+            {"ConsultarCurso", "ListarCursos", "OcuparCupo", "LiberarCupo", "ReservarCupo", "LiberarReserva"},
         )
         self.assertTrue(service.methods_by_name["ListarCursos"].server_streaming)
 

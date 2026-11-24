@@ -5,8 +5,16 @@ package cupos.v1;
 service Cupos {
   rpc ConsultarCurso(ConsultarCursoRequest) returns (Curso);
   rpc ListarCursos(ListarCursosRequest) returns (stream Curso);
+
+  // Obsoletos para la Saga: no son idempotentes (repetirlos descuenta o suma
+  // otra vez). Se conservan porque los usa el cliente Node de la Tarea 1.
   rpc OcuparCupo(ModificarCupoRequest) returns (Curso);
   rpc LiberarCupo(ModificarCupoRequest) returns (Curso);
+
+  // Paso 1 de la Saga y su compensacion. Idempotentes por reserva_id
+  // (el orquestador usa el saga_id como reserva_id).
+  rpc ReservarCupo(ReservarCupoRequest) returns (Reserva);
+  rpc LiberarReserva(LiberarReservaRequest) returns (Reserva);
 }
 
 message Curso {
@@ -19,3 +27,17 @@ message Curso {
 message ConsultarCursoRequest { string curso_id = 1; }
 message ListarCursosRequest {}
 message ModificarCupoRequest { string curso_id = 1; }
+
+message ReservarCupoRequest {
+  string reserva_id = 1;
+  string curso_id = 2;
+}
+
+message LiberarReservaRequest { string reserva_id = 1; }
+
+message Reserva {
+  string reserva_id = 1;
+  string curso_id = 2;
+  string estado = 3;  // "reservada" | "liberada"
+  Curso curso = 4;    // estado del curso despues de la operacion (vacio en una lapida)
+}
