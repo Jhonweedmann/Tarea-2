@@ -2,8 +2,8 @@
 
 Base interna: `http://orquestador:8000`. Público a través del gateway en `/api/v1/matriculas` y `/api/v1/sagas`.
 
-> Hoy lo atiende el stub (`stubs/app/orquestador.py`), que responde siempre `COMPLETADA` sin
-> llamar a nadie. B lo reemplaza por la implementación real manteniendo esta forma.
+> Implementación: `orquestador/app/` (la Saga está en `saga.py`). El stub
+> (`stubs/app/orquestador.py`) queda solo como referencia.
 
 ## `POST /matriculas`
 
@@ -14,17 +14,23 @@ Cabecera opcional `Idempotency-Key` (≤ 128 caracteres). Cuerpo:
 ```
 
 Ejecuta los 3 pasos (ver `docs/PLAN.md` §2): reservar cupo → cobrar → inscribir, usando el
-`saga_id` como clave idempotente en cada uno.
+`saga_id` como clave idempotente en cada uno. Antes valida que el estudiante exista
+(`validar_estudiante`); si Inscripción no responde a esa validación, la saga sigue y el paso 3
+vuelve a validar. El monto lo fija el orquestador (`MATRICULA_MONTO`, por defecto 150000).
 
 | Resultado | Código | Cuerpo |
 |---|---|---|
 | Saga completada | `201` + `Location: /sagas/{saga_id}` | representación de la saga |
 | Repetición con la misma `Idempotency-Key` | `200` + `Idempotent-Replay: true` | la misma representación guardada |
 | Misma `Idempotency-Key` aún en proceso | `409` | problem+json |
-| Estudiante o curso no existe | `404` | problem+json con `saga_id` |
+| Estudiante o curso no existe | `404` | problem+json con `saga_id`, estado `ABORTADA_NO_ENCONTRADO` |
 | Sin cupo (falla el paso 1, no se cobra) | `409` | problem+json con `saga_id`, estado `ABORTADA_SIN_CUPO` |
+| Cupos no responde (se libera la reserva por si acaso) | `503` + `Retry-After` | problem+json con `saga_id`, estado `COMPENSADA` |
 | Pagos no disponible / circuito abierto | `503` + `Retry-After` | problem+json con `saga_id`, estado `ABORTADA_PAGOS_NO_DISPONIBLE` |
-| Falla un paso posterior y se compensa | `502` (o `409` si es de negocio) | problem+json con `saga_id`, estado `COMPENSADA` |
+| Falla un paso posterior y se compensa | `502` (o `409`/`404` si es de negocio) | problem+json con `saga_id`, estado `COMPENSADA` |
+| Una compensación falla | el código del paso que falló | problem+json con `saga_id`, estado `COMPENSACION_PENDIENTE` (el worker la termina) |
+
+Los problem+json de la saga incluyen `saga_id`, `estado` y `_links.self` para consultar el historial.
 
 Representación de la saga (también la de `GET /sagas/{id}`):
 
@@ -37,6 +43,7 @@ Representación de la saga (también la de `GET /sagas/{id}`):
   "creada_en": "2026-11-22T16:00:00+00:00",
   "actualizada_en": "2026-11-22T16:00:01+00:00",
   "pasos": [
+    {"paso": "validar_estudiante", "resultado": "ok", "ts": "…"},
     {"paso": "reservar_cupo", "resultado": "ok", "ts": "…"},
     {"paso": "cobrar", "resultado": "ok", "ts": "…"},
     {"paso": "inscribir", "resultado": "ok", "ts": "…"}
@@ -50,8 +57,13 @@ antepone `X-Forwarded-Prefix` (si viene) en los `href` de `_links`, para que el 
 `/api/v1/sagas/…`.
 
 Estados: `INICIADA`, `CUPO_RESERVADO`, `PAGO_COBRADO`, `COMPLETADA`, `COMPENSANDO`, `COMPENSADA`,
-`COMPENSACION_PENDIENTE`, `ABORTADA_SIN_CUPO`, `ABORTADA_PAGOS_NO_DISPONIBLE`.
-Los pasos de compensación se agregan a `pasos` con nombres `reembolsar`, `liberar_cupo`, `dar_baja`.
+`COMPENSACION_PENDIENTE`, `ABORTADA_SIN_CUPO`, `ABORTADA_PAGOS_NO_DISPONIBLE`, `ABORTADA_NO_ENCONTRADO`.
+Los pasos de compensación se agregan a `pasos` con nombres `dar_baja`, `reembolsar`, `liberar_cupo`
+(siempre en ese orden, el inverso de los pasos).
+
+`resultado` de cada paso: `ok` (se aplicó), `error` (seguro que no se aplicó; no se compensa) o
+`incierto` (timeout o conexión cortada: pudo aplicarse, así que se compensa por si acaso). Si hay
+`detalle`, explica la falla. Si la saga falló, la representación trae además `error`.
 
 ## `GET /sagas/{saga_id}`
 

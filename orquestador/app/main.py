@@ -4,26 +4,38 @@ Público a través del gateway en /api/v1/matriculas y /api/v1/sagas. Contrato:
 docs/contratos/orquestador.md.
 """
 import os
+import uuid
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from comun.observabilidad import instrumentar, obtener_logger
 
+from .cupos_client import CuposClient
 from .database import RepositorioSagas, connect
+from .inscripcion_client import InscripcionClient
+from .pagos_client import PagosClient
+from .saga import FallaPaso, Saga
 
 DB_PATH = os.getenv("ORQUESTADOR_DB", "/data/orquestador.db")
+# Monto de la matrícula en pesos. Lo fija el orquestador, no el cliente.
+MONTO = int(os.getenv("MATRICULA_MONTO", "150000"))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db = connect(DB_PATH)
     app.state.sagas = RepositorioSagas(db)
+    clientes = (CuposClient(), PagosClient(), InscripcionClient())
+    app.state.cupos, app.state.pagos, app.state.inscripcion = clientes
     yield
+    for cliente in clientes:
+        cliente.close()
     db.close()
 
 
@@ -87,6 +99,36 @@ def representacion(request: Request, saga_id: str) -> dict | None:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+class MatriculaIn(BaseModel):
+    estudiante_id: str = Field(min_length=1, max_length=128)
+    curso_id: str = Field(min_length=1, max_length=64)
+
+
+def nueva_saga(app: FastAPI) -> Saga:
+    estado = app.state
+    return Saga(estado.sagas, estado.cupos, estado.pagos, estado.inscripcion, MONTO)
+
+
+def respuesta_saga(request: Request, saga_id: str, falla: FallaPaso | None) -> JSONResponse:
+    cuerpo = representacion(request, saga_id)
+    if falla is None:
+        # Location con la ruta interna: el gateway la traduce a /api/v1/sagas/{id}.
+        return JSONResponse(status_code=201, content=cuerpo, headers={"Location": f"/sagas/{saga_id}"})
+    cabeceras = {"Retry-After": str(falla.retry_after)} if falla.retry_after else None
+    return problem(falla.codigo_http, falla.titulo, falla.motivo, headers=cabeceras,
+                   saga_id=saga_id, estado=cuerpo["estado"], _links=cuerpo["_links"])
+
+
+@app.post("/matriculas", status_code=201)
+def crear_matricula(payload: MatriculaIn, request: Request):
+    saga_id = str(uuid.uuid4())
+    request.app.state.sagas.crear(saga_id, payload.estudiante_id, payload.curso_id)
+    log.info("saga iniciada", extra={"saga_id": saga_id, "estudiante_id": payload.estudiante_id,
+                                     "curso_id": payload.curso_id})
+    falla = nueva_saga(request.app).ejecutar(saga_id)
+    return respuesta_saga(request, saga_id, falla)
 
 
 @app.get("/sagas/{saga_id}")
