@@ -21,9 +21,12 @@ class ContractTests(unittest.TestCase):
         )
         self.assertTrue(service.methods_by_name["ListarCursos"].server_streaming)
 
-    def test_openapi_declares_v1_auth_and_problem_responses(self):
+    def test_openapi_de_inscripcion_es_interno_y_usa_problem_json(self):
         contract = yaml.safe_load((ROOT / "inscripcion" / "openapi.yaml").read_text(encoding="utf-8"))
-        self.assertIn("bearerAuth", contract["components"]["securitySchemes"])
-        self.assertIn("/v1/matriculas", contract["paths"])
+        # La autenticación es del gateway: el servicio interno no declara esquemas de seguridad.
+        self.assertNotIn("security", contract)
+        self.assertNotIn("securitySchemes", contract["components"])
+        self.assertIn("/estudiantes", contract["paths"])
+        self.assertFalse([ruta for ruta in contract["paths"] if ruta.startswith("/v1")])
         for nombre, respuesta in contract["components"]["responses"].items():
             self.assertEqual(respuesta["content"].keys(), {"application/problem+json"}, nombre)

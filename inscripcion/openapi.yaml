@@ -1,19 +1,16 @@
 openapi: 3.0.3
 info:
-  title: Servicio de Matrículas
-  version: 1.0.0
+  title: Servicio de Inscripción
+  version: 2.0.0
   description: >-
-    API pública de AprendeMás para estudiantes y matrículas. La disponibilidad de
-    cupos la decide el servicio interno Cupos (gRPC). Todos los errores usan
+    Servicio interno de AprendeMás con los estudiantes y sus inscripciones. No se
+    expone directamente: el gateway publica /api/v1/estudiantes y autentica antes de
+    reenviar, por eso este servicio no valida tokens. Todos los errores usan
     Problem Details (RFC 9457) con Content-Type application/problem+json.
 servers:
-  - url: http://localhost:8000
-security:
-  - bearerAuth: []
+  - url: http://inscripcion:8000
 tags:
   - name: estudiantes
-  - name: cursos
-  - name: matriculas
   - name: operacion
 
 paths:
@@ -21,7 +18,6 @@ paths:
     get:
       tags: [operacion]
       summary: Indica si el servicio está operativo
-      security: []
       responses:
         '200':
           description: Servicio operativo
@@ -29,7 +25,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Salud'}
 
-  /v1/estudiantes:
+  /estudiantes:
     get:
       tags: [estudiantes]
       summary: Lista estudiantes, paginado
@@ -42,7 +38,6 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PaginaEstudiantes'}
-        '401': {$ref: '#/components/responses/NoAutenticado'}
         '422': {$ref: '#/components/responses/Invalida'}
     post:
       tags: [estudiantes]
@@ -60,12 +55,10 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Estudiante'}
-        '401': {$ref: '#/components/responses/NoAutenticado'}
-        '403': {$ref: '#/components/responses/SinPermiso'}
         '409': {$ref: '#/components/responses/Conflicto'}
         '422': {$ref: '#/components/responses/Invalida'}
 
-  /v1/estudiantes/{estudiante_id}:
+  /estudiantes/{estudiante_id}:
     parameters:
       - {name: estudiante_id, in: path, required: true, schema: {type: string}}
     get:
@@ -77,132 +70,9 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Estudiante'}
-        '401': {$ref: '#/components/responses/NoAutenticado'}
         '404': {$ref: '#/components/responses/NoEncontrado'}
-
-  /v1/cursos/{curso_id}:
-    parameters:
-      - {name: curso_id, in: path, required: true, schema: {type: string}}
-    get:
-      tags: [cursos]
-      summary: Consulta la disponibilidad de un curso en Cupos (con caché de corta duración)
-      responses:
-        '200':
-          description: Disponibilidad del curso
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Curso'}
-        '401': {$ref: '#/components/responses/NoAutenticado'}
-        '404': {$ref: '#/components/responses/NoEncontrado'}
-        '502': {$ref: '#/components/responses/DependenciaFallida'}
-        '503': {$ref: '#/components/responses/DependenciaNoDisponible'}
-        '504': {$ref: '#/components/responses/DependenciaLenta'}
-
-  /v1/matriculas:
-    get:
-      tags: [matriculas]
-      summary: Lista matrículas, paginado (más recientes primero)
-      parameters:
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
-      responses:
-        '200':
-          description: Página de matrículas
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/PaginaMatriculas'}
-        '401': {$ref: '#/components/responses/NoAutenticado'}
-        '422': {$ref: '#/components/responses/Invalida'}
-    post:
-      tags: [matriculas]
-      summary: Matricula a un estudiante ocupando un cupo en Cupos
-      parameters:
-        - name: Idempotency-Key
-          in: header
-          required: false
-          description: >-
-            Identificador único por intención de matrícula, generado por el cliente.
-            Un reintento con la misma clave durante 24 h devuelve la matrícula original
-            (200) sin ocupar otro cupo.
-          schema: {type: string, maxLength: 128}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/MatriculaEntrada'}
-      responses:
-        '201':
-          description: Matrícula creada
-          headers:
-            Location: {$ref: '#/components/headers/Location'}
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Matricula'}
-        '200':
-          description: Reintento con una Idempotency-Key ya procesada; se devuelve la matrícula original
-          headers:
-            Location: {$ref: '#/components/headers/Location'}
-            Idempotent-Replay:
-              description: Siempre "true" cuando la respuesta es una repetición
-              schema: {type: string, enum: ['true']}
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Matricula'}
-        '401': {$ref: '#/components/responses/NoAutenticado'}
-        '403': {$ref: '#/components/responses/SinPermiso'}
-        '404': {$ref: '#/components/responses/NoEncontrado'}
-        '409': {$ref: '#/components/responses/Conflicto'}
-        '422': {$ref: '#/components/responses/Invalida'}
-        '502': {$ref: '#/components/responses/DependenciaFallida'}
-        '503': {$ref: '#/components/responses/DependenciaNoDisponible'}
-        '504': {$ref: '#/components/responses/DependenciaLenta'}
-
-  /v1/matriculas/{matricula_id}:
-    parameters:
-      - {name: matricula_id, in: path, required: true, schema: {type: string}}
-    get:
-      tags: [matriculas]
-      summary: Consulta una matrícula
-      responses:
-        '200':
-          description: Matrícula encontrada
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Matricula'}
-        '401': {$ref: '#/components/responses/NoAutenticado'}
-        '404': {$ref: '#/components/responses/NoEncontrado'}
-
-  /v1/matriculas/{matricula_id}/revertir:
-    parameters:
-      - {name: matricula_id, in: path, required: true, schema: {type: string}}
-    post:
-      tags: [matriculas]
-      summary: Revierte una matrícula activa y libera su cupo
-      responses:
-        '200':
-          description: Matrícula revertida
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Matricula'}
-        '401': {$ref: '#/components/responses/NoAutenticado'}
-        '403': {$ref: '#/components/responses/SinPermiso'}
-        '404': {$ref: '#/components/responses/NoEncontrado'}
-        '409': {$ref: '#/components/responses/Conflicto'}
-        '502': {$ref: '#/components/responses/DependenciaFallida'}
-        '503': {$ref: '#/components/responses/DependenciaNoDisponible'}
-        '504': {$ref: '#/components/responses/DependenciaLenta'}
 
 components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      description: >-
-        Token opaco en Authorization: Bearer <token>. El token de escritura permite
-        todas las operaciones; el de solo lectura permite únicamente GET. Sin token o
-        con un token desconocido se responde 401; con un token válido que no alcanza
-        para la operación, 403.
-
   parameters:
     Limit:
       name: limit
@@ -219,54 +89,22 @@ components:
 
   headers:
     Location:
-      description: Ruta del recurso creado
+      description: Ruta interna del recurso creado (el gateway la traduce a la ruta pública)
       schema: {type: string}
 
   responses:
-    NoAutenticado:
-      description: Falta el token o no es válido
-      headers:
-        WWW-Authenticate:
-          schema: {type: string}
-      content:
-        application/problem+json:
-          schema: {$ref: '#/components/schemas/Problema'}
-    SinPermiso:
-      description: El token es válido pero no permite esta operación
-      content:
-        application/problem+json:
-          schema: {$ref: '#/components/schemas/Problema'}
     NoEncontrado:
       description: El recurso no existe
       content:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problema'}
     Conflicto:
-      description: >-
-        El estado actual impide la operación (sin cupos, matrícula duplicada o ya
-        revertida, correo repetido o Idempotency-Key en proceso)
+      description: El estado actual impide la operación (por ejemplo, correo repetido)
       content:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problema'}
     Invalida:
       description: El cuerpo o los parámetros no cumplen el contrato
-      content:
-        application/problem+json:
-          schema: {$ref: '#/components/schemas/Problema'}
-    DependenciaFallida:
-      description: Cupos respondió con un error inesperado
-      content:
-        application/problem+json:
-          schema: {$ref: '#/components/schemas/Problema'}
-    DependenciaNoDisponible:
-      description: >-
-        Cupos no está disponible, o Redis no lo está y se envió Idempotency-Key.
-        Se puede reintentar.
-      content:
-        application/problem+json:
-          schema: {$ref: '#/components/schemas/Problema'}
-    DependenciaLenta:
-      description: Cupos no respondió dentro del deadline. Se puede reintentar.
       content:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problema'}
@@ -303,63 +141,6 @@ components:
         items:
           type: array
           items: {$ref: '#/components/schemas/Estudiante'}
-        total: {type: integer, minimum: 0}
-        limit: {type: integer}
-        offset: {type: integer}
-
-    Curso:
-      type: object
-      additionalProperties: false
-      required: [id, nombre, cupos_disponibles]
-      properties:
-        id: {type: string}
-        nombre: {type: string}
-        cupos_disponibles: {type: integer, minimum: 0}
-
-    MatriculaEntrada:
-      type: object
-      required: [estudiante_id, curso_id]
-      properties:
-        estudiante_id: {type: string}
-        curso_id: {type: string}
-
-    Matricula:
-      type: object
-      additionalProperties: false
-      required: [id, estudiante_id, curso_id, estado, creada_en, _links]
-      properties:
-        id: {type: string}
-        estudiante_id: {type: string}
-        curso_id: {type: string}
-        estado: {type: string, enum: [activa, revertida]}
-        creada_en: {type: string, format: date-time}
-        _links: {$ref: '#/components/schemas/EnlacesMatricula'}
-
-    EnlacesMatricula:
-      type: object
-      description: Acciones posibles desde el estado actual (HATEOAS). "revertir" solo aparece si la matrícula está activa.
-      additionalProperties: false
-      required: [self]
-      properties:
-        self: {$ref: '#/components/schemas/Enlace'}
-        revertir: {$ref: '#/components/schemas/Enlace'}
-
-    Enlace:
-      type: object
-      additionalProperties: false
-      required: [href, method]
-      properties:
-        href: {type: string}
-        method: {type: string, enum: [GET, POST]}
-
-    PaginaMatriculas:
-      type: object
-      additionalProperties: false
-      required: [items, total, limit, offset]
-      properties:
-        items:
-          type: array
-          items: {$ref: '#/components/schemas/Matricula'}
         total: {type: integer, minimum: 0}
         limit: {type: integer}
         offset: {type: integer}
