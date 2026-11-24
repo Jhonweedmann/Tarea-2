@@ -22,7 +22,34 @@ Pendiente de A para fases posteriores (no bloquea a B):
 - Opcional: que el BFF use el circuit breaker de C hacia Pagos (hoy espera su timeout de 2 s
   cuando Pagos está caído; ver ADR-006, "Costo aceptado").
 
-## Fase B (Persona B) — qué hacer
+## Fase B (Persona B) — terminada
+
+Todo lo de la Persona B en [PLAN.md](PLAN.md) §4 está hecho, en `main`.
+
+| Qué | Dónde | Cómo se verificó |
+|---|---|---|
+| Reservas idempotentes con lápida (`ReservarCupo` / `LiberarReserva`) y logs JSON con `saga_id` | `cupos/` | `tests/test_cupos.py` + en vivo |
+| Inscripción: refactor de `matriculas/` sin gRPC ni auth, inscripciones idempotentes, `/admin/falla`, `est-001` precargado | `inscripcion/` | `tests/test_api.py` (contra su OpenAPI) + en vivo |
+| Orquestador: Saga con compensación en orden inverso, `GET /sagas/{id}`, `saga_total`, `Idempotency-Key` en Redis, worker con backoff | `orquestador/` | `tests/test_orquestador.py`, `tests/test_clientes_orquestador.py` |
+| `pagos_client.py` mínimo (solo timeout) con la interfaz para C | `orquestador/app/pagos_client.py` | `tests/test_clientes_orquestador.py` |
+| Compose con orquestador e inscripción reales | `docker-compose.yml` | `docker compose up`: todo healthy |
+| Escenarios reproducibles | `scripts/escenarios.py` | 1, 2, idempotencia, sin-cupo y pendiente con `Resultado: OK` |
+| ADR-007, diagramas Mermaid, README escenarios 1 y 2 | `docs/adr/`, `docs/diagramas/`, `README.md` | — |
+
+Pendiente que toca a otros:
+
+- **C:** reemplazar `pagos_client.py` respetando la interfaz (ver abajo, "Hecho (B)"). Importante
+  para el escenario 3: con el circuito abierto o el bulkhead lleno, lanzar
+  `PagosNoDisponible(..., puede_haberse_aplicado=False)` para que la Saga solo libere el cupo.
+  Si se agregan reintentos, revisar que el peor caso de la saga siga bajo
+  `GATEWAY_TIMEOUT_SAGA_SECONDS` (hoy 15 s; sin reintentos el peor caso es ~14 s).
+- **A:** el panel de Grafana de sagas ya recibe `saga_total`; capturas para el informe.
+- **Informe (B):** la sección de la Saga puede salir de ADR-007 (incluye la tabla de evidencia
+  medida) y de `docs/diagramas/saga.md`.
+
+La guía original de la fase B queda abajo como referencia.
+
+## Fase B (Persona B) — guía original
 
 Objetivo: la Saga real (escenarios 1 y 2). Contratos: [orquestador](contratos/orquestador.md),
 [inscripción](contratos/inscripcion.md) y [cupos](contratos/cupos.md).

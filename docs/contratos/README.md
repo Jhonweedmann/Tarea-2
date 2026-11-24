@@ -13,8 +13,9 @@ el archivo correspondiente y avisa a quien lo consume** (la columna "Consumidore
 | Cupos (gRPC) | [cupos.md](cupos.md) | B | orquestador, BFF |
 | Pagos | [pagos.md](pagos.md) | C | orquestador, BFF |
 
-Mientras B y C construyen sus servicios, `docker compose` levanta **stubs** (`stubs/`) que
-cumplen estos contratos con datos en memoria. Ver [docs/TRASPASO.md](../TRASPASO.md).
+Orquestador, Inscripción y Cupos ya son los servicios reales (B). Mientras C construye Pagos,
+`docker compose` levanta su **stub** (`stubs/`), que cumple el contrato con datos en memoria. Ver
+[docs/TRASPASO.md](../TRASPASO.md).
 
 ## Convenciones comunes
 

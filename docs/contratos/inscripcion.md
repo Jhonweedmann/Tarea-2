@@ -4,7 +4,8 @@ Base interna: `http://inscripcion:8000`. Sale de refactorizar `matriculas/`: sin
 (lo hace el gateway). Público solo `/estudiantes` (vía gateway en `/api/v1/estudiantes`); el resto
 lo usan el orquestador y el BFF.
 
-> Hoy lo atiende el stub (`stubs/app/inscripcion.py`) con el estudiante `est-001` precargado.
+> Implementación: `inscripcion/` (contrato OpenAPI en `inscripcion/openapi.yaml`), con el
+> estudiante `est-001` precargado. El stub (`stubs/app/inscripcion.py`) queda solo como referencia.
 
 ## Estudiantes
 

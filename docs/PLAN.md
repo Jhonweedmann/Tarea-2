@@ -127,16 +127,18 @@ Las rutas públicas quedaron bajo `/api/v1/...` (ADR-003).
 
 ### Persona B — Transacción distribuida (Saga)
 
+**Estado: terminada.** Detalle y verificación en [TRASPASO.md](TRASPASO.md).
+
 **Carpetas:** `orquestador/` (excepto `pagos_client.py` y `resiliencia.py`), `cupos/`, `inscripcion/` (renombrado desde `matriculas/`)
 
-- [ ] `cupos/`: tabla `reservas`, `ReservarCupo` / `LiberarReserva` idempotentes por `reserva_id`. Conservar el lock y el `CHECK` contra sobrecupo.
-- [ ] `inscripcion/`: refactor de `matriculas/`. Inscribir y dar de baja idempotentes por `inscripcion_id`, quitar gRPC y auth, y agregar `/admin/falla` para hacer fallar el paso 3.
-- [ ] `orquestador/`: `POST /matriculas` ejecuta los 3 pasos, persiste cada transición en la tabla `sagas` y compensa en orden inverso. `GET /sagas/{id}` muestra el historial de pasos.
-- [ ] Worker de reintento para `COMPENSACION_PENDIENTE` (backoff exponencial).
-- [ ] Reutilizar la idempotencia con Redis de la Tarea 1 en `POST /matriculas`.
-- [ ] Tests: camino feliz; fallo en el paso 3 → reembolso y luego liberar cupo; el mismo `Idempotency-Key` dos veces → un solo cobro; sin cupo → falla en el paso 1 sin cobrar.
-- [ ] ADR-007 Saga orquestada vs coreografía y Saga vs 2PC.
-- [ ] Diagramas de secuencia (Mermaid): flujo feliz y fallo en el paso 3 con compensación.
+- [x] `cupos/`: tabla `reservas`, `ReservarCupo` / `LiberarReserva` idempotentes por `reserva_id`. Conservar el lock y el `CHECK` contra sobrecupo.
+- [x] `inscripcion/`: refactor de `matriculas/`. Inscribir y dar de baja idempotentes por `inscripcion_id`, quitar gRPC y auth, y agregar `/admin/falla` para hacer fallar el paso 3.
+- [x] `orquestador/`: `POST /matriculas` ejecuta los 3 pasos, persiste cada transición en la tabla `sagas` y compensa en orden inverso. `GET /sagas/{id}` muestra el historial de pasos.
+- [x] Worker de reintento para `COMPENSACION_PENDIENTE` (backoff exponencial).
+- [x] Reutilizar la idempotencia con Redis de la Tarea 1 en `POST /matriculas`.
+- [x] Tests: camino feliz; fallo en el paso 3 → reembolso y luego liberar cupo; el mismo `Idempotency-Key` dos veces → un solo cobro; sin cupo → falla en el paso 1 sin cobrar.
+- [x] ADR-007 Saga orquestada vs coreografía y Saga vs 2PC.
+- [x] Diagramas de secuencia (Mermaid): flujo feliz y fallo en el paso 3 con compensación.
 
 **Escenarios a su cargo:** **1 (éxito)** y **2 (fallo con compensación)**. Evidencia: `GET /sagas/{id}`, logs con `saga_id` en los 3 servicios y estado final de las 3 BD (sin cobro huérfano ni reserva colgada).
 
@@ -187,11 +189,11 @@ eco.
 ## 6. Checklist contra la rúbrica
 
 - [x] Gateway: enruta, autentica y limita · BFF: agrega ≥ 2 servicios (ABET 1)
-- [ ] Saga: camino feliz y compensación en orden inverso (ABET 1)
+- [x] Saga: camino feliz y compensación en orden inverso (ABET 1)
 - [ ] Timeout + CB con fallback + Bulkhead sobre Pagos (ABET 1)
-- [ ] Justificación de orquestación vs coreografía y de Saga vs 2PC (ABET 2)
-- [ ] Diagramas del flujo feliz y de las fallas (ABET 2)
-- [ ] Idempotencia en pasos y compensaciones · gateway sin lógica de negocio (ABET 2)
+- [x] Justificación de orquestación vs coreografía y de Saga vs 2PC (ABET 2)
+- [x] Diagramas del flujo feliz y de las fallas (ABET 2)
+- [x] Idempotencia en pasos y compensaciones · gateway sin lógica de negocio (ABET 2)
 - [ ] Escenarios reproducibles: lentitud, caída, pico de carga (ABET 6)
 - [ ] Evidencia del antes/después: métricas, logs, estado del circuito, rechazos (ABET 6)
 - [ ] Interpretación: qué muestra cada gráfico y qué pasaría sin el patrón (ABET 6)
