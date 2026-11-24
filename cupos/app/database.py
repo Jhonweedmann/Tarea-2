@@ -12,6 +12,18 @@ def connect(path: str) -> sqlite3.Connection:
             cupos_disponibles INTEGER NOT NULL CHECK(cupos_disponibles >= 0)
         )"""
     )
+    # Una fila por reserva_id: la clave primaria es lo que impide descontar dos veces
+    # el mismo cupo si el orquestador repite ReservarCupo. curso_id queda NULL en una
+    # "lapida" (LiberarReserva de una reserva que nunca llego a existir).
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS reservas (
+            reserva_id TEXT PRIMARY KEY,
+            curso_id TEXT REFERENCES cursos(id),
+            estado TEXT NOT NULL CHECK(estado IN ('reservada', 'liberada')),
+            creada_en TEXT NOT NULL,
+            actualizada_en TEXT NOT NULL
+        )"""
+    )
     return db
 
 
