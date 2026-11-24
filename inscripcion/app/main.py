@@ -8,8 +8,10 @@ Las rutas van sin /v1: el gateway traduce /api/v1/estudiantes -> /estudiantes.
 """
 import os
 import sqlite3
+import threading
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 
@@ -33,6 +35,9 @@ TITULOS = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.db = connect(DB_PATH)
+    # FastAPI atiende los endpoints sincronos en varios hilos. Este lock hace que "leer si ya
+    # existe y luego escribir" sea atomico en inscribir y dar de baja (sin carreras entre reintentos).
+    app.state.lock = threading.Lock()
     yield
     app.state.db.close()
 
@@ -47,6 +52,12 @@ app.openapi = lambda: _contrato
 class EstudianteIn(BaseModel):
     nombre: str = Field(min_length=2, max_length=120)
     email: EmailStr
+
+
+class InscripcionIn(BaseModel):
+    inscripcion_id: str = Field(min_length=1, max_length=128)
+    estudiante_id: str
+    curso_id: str
 
 
 class Problema(Exception):
@@ -131,3 +142,88 @@ def consultar_estudiante(estudiante_id: str, request: Request):
     if not row:
         raise Problema(404, "Estudiante no encontrado", "No existe un estudiante con ese id.")
     return dict(row)
+
+
+# ---------------------------------------------------------------- Inscripciones (Saga)
+# POST /inscripciones es el paso 3 de la Saga y POST /inscripciones/{id}/baja su compensacion.
+# Las dos son idempotentes por inscripcion_id (= saga_id): repetirlas no crea ni cambia nada.
+
+CAMPOS_INSCRIPCION = ("inscripcion_id", "estudiante_id", "curso_id", "estado", "creada_en")
+
+
+def ahora() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def buscar_inscripcion(db, inscripcion_id: str):
+    return db.execute("SELECT * FROM inscripciones WHERE inscripcion_id=?", (inscripcion_id,)).fetchone()
+
+
+def representacion_inscripcion(row) -> dict:
+    # Una lapida no tiene estudiante ni curso: esos campos se omiten en vez de enviarlos en null.
+    return {campo: row[campo] for campo in CAMPOS_INSCRIPCION if row[campo] is not None}
+
+
+@app.post("/inscripciones", status_code=status.HTTP_201_CREATED, tags=["inscripciones"])
+def inscribir(payload: InscripcionIn, request: Request, response: Response):
+    db = request.app.state.db
+    with request.app.state.lock:
+        previa = buscar_inscripcion(db, payload.inscripcion_id)
+        if previa is not None:
+            if previa["estado"] == "baja":
+                # Lapida o compensacion ya hecha: llego una inscripcion atrasada (timeout ambiguo).
+                raise Problema(409, "Inscripción dada de baja",
+                               "Ese inscripcion_id ya fue compensado y no se puede volver a inscribir.")
+            if (previa["estudiante_id"], previa["curso_id"]) != (payload.estudiante_id, payload.curso_id):
+                raise Problema(409, "inscripcion_id en uso", "Ese inscripcion_id ya se usó con otro estudiante o curso.")
+            # Repeticion de la misma llamada: se devuelve lo guardado con 200, sin crear otra.
+            return JSONResponse(status_code=200, content=representacion_inscripcion(previa))
+
+        if not db.execute("SELECT 1 FROM estudiantes WHERE id=?", (payload.estudiante_id,)).fetchone():
+            raise Problema(404, "Estudiante no encontrado", "No existe un estudiante con ese id.")
+        marca = ahora()
+        try:
+            db.execute("INSERT INTO inscripciones VALUES (?, ?, ?, 'activa', ?, ?)",
+                       (payload.inscripcion_id, payload.estudiante_id, payload.curso_id, marca, marca))
+            db.commit()
+        except sqlite3.IntegrityError:
+            db.rollback()
+            raise Problema(409, "Inscripción duplicada",
+                           "El estudiante ya tiene una inscripción activa en este curso.")
+        response.headers["Location"] = f"/inscripciones/{payload.inscripcion_id}"
+        return representacion_inscripcion(buscar_inscripcion(db, payload.inscripcion_id))
+
+
+@app.post("/inscripciones/{inscripcion_id}/baja", tags=["inscripciones"])
+def dar_baja(inscripcion_id: str, request: Request):
+    db = request.app.state.db
+    with request.app.state.lock:
+        previa = buscar_inscripcion(db, inscripcion_id)
+        if previa is None:
+            # Nunca se inscribio (o la inscripcion aun no llega): no-op exitoso, pero queda una
+            # lapida para que un POST /inscripciones atrasado con este id se rechace con 409.
+            marca = ahora()
+            db.execute("INSERT INTO inscripciones VALUES (?, NULL, NULL, 'baja', ?, ?)",
+                       (inscripcion_id, marca, marca))
+            db.commit()
+        elif previa["estado"] == "activa":
+            db.execute("UPDATE inscripciones SET estado='baja', actualizada_en=? WHERE inscripcion_id=?",
+                       (ahora(), inscripcion_id))
+            db.commit()
+        # Si ya estaba de baja no se hace nada: la compensacion es idempotente.
+        return representacion_inscripcion(buscar_inscripcion(db, inscripcion_id))
+
+
+@app.get("/inscripciones", tags=["inscripciones"])
+def listar_inscripciones(request: Request, estudiante_id: str = Query(min_length=1)):
+    filas = request.app.state.db.execute(
+        "SELECT * FROM inscripciones WHERE estudiante_id=? ORDER BY creada_en, inscripcion_id", (estudiante_id,))
+    return {"items": [representacion_inscripcion(fila) for fila in filas]}
+
+
+@app.get("/inscripciones/{inscripcion_id}", tags=["inscripciones"])
+def consultar_inscripcion(inscripcion_id: str, request: Request):
+    row = buscar_inscripcion(request.app.state.db, inscripcion_id)
+    if row is None:
+        raise Problema(404, "Inscripción no encontrada", "No existe una inscripción con ese id.")
+    return representacion_inscripcion(row)

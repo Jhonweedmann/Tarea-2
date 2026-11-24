@@ -80,6 +80,73 @@ class ApiContratoTests(unittest.TestCase):
         self.assertEqual(r.status_code, 422)
         self.assertTrue(cuerpo["errors"])
 
+    # --- Inscripciones: paso 3 de la Saga y su compensación ---
+
+    def inscribir(self, inscripcion_id, estudiante_id, curso_id="ARQ-101"):
+        r = self.client.post("/inscripciones", json={"inscripcion_id": inscripcion_id,
+                                                     "estudiante_id": estudiante_id, "curso_id": curso_id})
+        return r, self.cumple_contrato(r, "/inscripciones", "post")
+
+    def test_inscribir_repetido_no_crea_otra(self):
+        estudiante = self.crear_estudiante()
+        r1, primera = self.inscribir("saga-1", estudiante["id"])
+        r2, repetida = self.inscribir("saga-1", estudiante["id"])
+        self.assertEqual((r1.status_code, r2.status_code), (201, 200))
+        self.assertEqual(r1.headers["location"], "/inscripciones/saga-1")
+        self.assertEqual(primera, repetida)
+        self.assertEqual(primera["estado"], "activa")
+        r = self.client.get("/inscripciones", params={"estudiante_id": estudiante["id"]})
+        self.assertEqual(len(self.cumple_contrato(r, "/inscripciones", "get")["items"]), 1)
+
+    def test_inscribir_estudiante_inexistente_responde_404(self):
+        r, _ = self.inscribir("saga-1", "no-existe")
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(self.client.get("/inscripciones/saga-1").status_code, 404)
+
+    def test_segunda_inscripcion_activa_en_el_mismo_curso_responde_409(self):
+        estudiante = self.crear_estudiante()
+        self.inscribir("saga-1", estudiante["id"])
+        r, _ = self.inscribir("saga-2", estudiante["id"])
+        self.assertEqual(r.status_code, 409)
+        # Tras dar de baja la primera, el estudiante puede volver a inscribirse.
+        self.client.post("/inscripciones/saga-1/baja")
+        r, _ = self.inscribir("saga-3", estudiante["id"])
+        self.assertEqual(r.status_code, 201)
+
+    def test_mismo_id_con_otros_datos_responde_409(self):
+        estudiante = self.crear_estudiante()
+        self.inscribir("saga-1", estudiante["id"], "ARQ-101")
+        r, _ = self.inscribir("saga-1", estudiante["id"], "API-201")
+        self.assertEqual(r.status_code, 409)
+
+    def test_baja_es_idempotente(self):
+        estudiante = self.crear_estudiante()
+        self.inscribir("saga-1", estudiante["id"])
+        for _ in range(2):
+            r = self.client.post("/inscripciones/saga-1/baja")
+            baja = self.cumple_contrato(r, "/inscripciones/{inscripcion_id}/baja", "post")
+            self.assertEqual((r.status_code, baja["estado"]), (200, "baja"))
+            self.assertEqual(baja["estudiante_id"], estudiante["id"])
+        r = self.client.get("/inscripciones", params={"estudiante_id": estudiante["id"]})
+        self.assertEqual([i["estado"] for i in r.json()["items"]], ["baja"])
+
+    def test_baja_de_inexistente_deja_lapida_y_rechaza_inscripcion_atrasada(self):
+        estudiante = self.crear_estudiante()
+        r = self.client.post("/inscripciones/saga-1/baja")
+        lapida = self.cumple_contrato(r, "/inscripciones/{inscripcion_id}/baja", "post")
+        self.assertEqual((r.status_code, lapida["estado"]), (200, "baja"))
+        self.assertNotIn("estudiante_id", lapida)
+        # El paso 3 llega después de su compensación (timeout ambiguo): se rechaza.
+        r, _ = self.inscribir("saga-1", estudiante["id"])
+        self.assertEqual(r.status_code, 409)
+        r = self.client.get("/inscripciones", params={"estudiante_id": estudiante["id"]})
+        self.assertEqual(r.json()["items"], [])
+
+    def test_listar_inscripciones_exige_estudiante_id(self):
+        r = self.client.get("/inscripciones")
+        self.cumple_contrato(r, "/inscripciones", "get")
+        self.assertEqual(r.status_code, 422)
+
     # --- Formato uniforme de errores ---
 
     def test_ruta_y_metodo_inexistentes_responden_problem_json(self):

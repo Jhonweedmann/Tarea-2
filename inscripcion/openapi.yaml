@@ -11,6 +11,11 @@ servers:
   - url: http://inscripcion:8000
 tags:
   - name: estudiantes
+  - name: inscripciones
+    description: >-
+      Paso 3 de la Saga de matrícula y su compensación. Las usan el orquestador y el
+      BFF; no son públicas. Idempotentes por inscripcion_id (el orquestador usa el
+      saga_id).
   - name: operacion
 
 paths:
@@ -71,6 +76,84 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Estudiante'}
         '404': {$ref: '#/components/responses/NoEncontrado'}
+
+  /inscripciones:
+    get:
+      tags: [inscripciones]
+      summary: Lista las inscripciones de un estudiante (activas y dadas de baja)
+      parameters:
+        - {name: estudiante_id, in: query, required: true, schema: {type: string, minLength: 1}}
+      responses:
+        '200':
+          description: Inscripciones del estudiante, de la más antigua a la más reciente
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListaInscripciones'}
+        '422': {$ref: '#/components/responses/Invalida'}
+    post:
+      tags: [inscripciones]
+      summary: Inscribe a un estudiante en un curso (paso 3 de la Saga, idempotente)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/InscripcionEntrada'}
+      responses:
+        '201':
+          description: Inscripción creada
+          headers:
+            Location: {$ref: '#/components/headers/Location'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Inscripcion'}
+        '200':
+          description: >-
+            Repetición con el mismo inscripcion_id y los mismos datos: se devuelve la
+            inscripción guardada sin crear otra
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Inscripcion'}
+        '404': {$ref: '#/components/responses/NoEncontrado'}
+        '409':
+          description: >-
+            El estudiante ya tiene otra inscripción activa en el curso, el
+            inscripcion_id ya fue dado de baja (la compensación llegó antes) o se usó con
+            otros datos
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problema'}
+        '422': {$ref: '#/components/responses/Invalida'}
+
+  /inscripciones/{inscripcion_id}:
+    parameters:
+      - {name: inscripcion_id, in: path, required: true, schema: {type: string}}
+    get:
+      tags: [inscripciones]
+      summary: Consulta una inscripción
+      responses:
+        '200':
+          description: Inscripción encontrada (puede ser una lápida)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Inscripcion'}
+        '404': {$ref: '#/components/responses/NoEncontrado'}
+
+  /inscripciones/{inscripcion_id}/baja:
+    parameters:
+      - {name: inscripcion_id, in: path, required: true, schema: {type: string}}
+    post:
+      tags: [inscripciones]
+      summary: Da de baja una inscripción (compensación del paso 3, idempotente)
+      description: >-
+        Si la inscripción está activa pasa a "baja". Si ya estaba de baja no cambia nada.
+        Si no existe, responde igual con 200 y guarda una lápida para rechazar un
+        POST /inscripciones atrasado con el mismo id.
+      responses:
+        '200':
+          description: Inscripción dada de baja (o lápida)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Inscripcion'}
 
 components:
   parameters:
@@ -144,6 +227,35 @@ components:
         total: {type: integer, minimum: 0}
         limit: {type: integer}
         offset: {type: integer}
+
+    InscripcionEntrada:
+      type: object
+      required: [inscripcion_id, estudiante_id, curso_id]
+      properties:
+        inscripcion_id: {type: string, minLength: 1, maxLength: 128}
+        estudiante_id: {type: string}
+        curso_id: {type: string}
+
+    Inscripcion:
+      type: object
+      additionalProperties: false
+      description: estudiante_id y curso_id se omiten en una lápida (baja de algo que nunca se inscribió).
+      required: [inscripcion_id, estado, creada_en]
+      properties:
+        inscripcion_id: {type: string}
+        estudiante_id: {type: string}
+        curso_id: {type: string}
+        estado: {type: string, enum: [activa, baja]}
+        creada_en: {type: string, format: date-time}
+
+    ListaInscripciones:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Inscripcion'}
 
     Problema:
       type: object

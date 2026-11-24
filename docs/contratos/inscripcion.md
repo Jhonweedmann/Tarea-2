@@ -24,18 +24,22 @@ lo usan el orquestador y el BFF.
 
 | Caso | Respuesta |
 |---|---|
-| Nueva | `201` `{"inscripcion_id", "estudiante_id", "curso_id", "estado": "activa", "creada_en"}` |
+| Nueva | `201` `{"inscripcion_id", "estudiante_id", "curso_id", "estado": "activa", "creada_en"}` + `Location: /inscripciones/{id}` |
 | Mismo `inscripcion_id` repetido | `200` con lo guardado (no crea otra) |
 | Estudiante no existe | `404` |
 | El estudiante ya tiene otra inscripción activa en ese curso | `409` |
 | `inscripcion_id` ya dado de baja (la compensación llegó antes) | `409` |
+| Mismo `inscripcion_id` con otro estudiante o curso | `409` |
 
 **`POST /inscripciones/{inscripcion_id}/baja`** — compensación, idempotente:
 
 - Si existe y está activa → la marca `"estado": "baja"` → `200`.
 - Si ya estaba de baja → `200` con lo mismo.
-- Si **no existe** → `200` no-op. Recomendado: guardar una "lápida" (`estado: baja`) para que un
-  `POST /inscripciones` atrasado con ese id (timeout ambiguo) se rechace con `409`.
+- Si **no existe** → `200` no-op. Guarda una "lápida" (`estado: baja`, sin `estudiante_id` ni
+  `curso_id`) para que un `POST /inscripciones` atrasado con ese id (timeout ambiguo) se rechace con `409`.
+
+**`GET /inscripciones/{inscripcion_id}`** → `200` con la inscripción (o la lápida); `404` si no existe.
+Sirve para revisar el estado final tras una Saga.
 
 **`GET /inscripciones?estudiante_id=est-001`** → `200` `{"items": [ ...inscripciones... ]}`
 (lo consume el BFF; los campos son los del `201` de arriba).
