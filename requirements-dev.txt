@@ -1,5 +1,6 @@
 -r cupos/requirements.txt
 -r inscripcion/requirements.txt
+-r orquestador/requirements.txt
 -r gateway/requirements.txt
 -r bff-web/requirements.txt
 -r stubs/requirements.txt
