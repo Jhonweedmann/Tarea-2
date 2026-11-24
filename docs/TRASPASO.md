@@ -79,6 +79,14 @@ docker compose up --build -d         # el sistema completo funciona con stubs
   ```
 
   Acordar esta interfaz con C antes de empezar.
+
+  **Hecho (B):** `orquestador/app/pagos_client.py` mínimo con esa interfaz y dos agregados que la
+  Saga necesita:
+  - `PagosNoDisponible(motivo, puede_haberse_aplicado=True, retry_after=5)`. C debe poner
+    `puede_haberse_aplicado=False` cuando la solicitud nunca salió (circuito abierto, bulkhead
+    lleno, no conectó): así la Saga solo libera el cupo y no intenta un reembolso innecesario.
+    `retry_after` es lo que el orquestador devuelve en la cabecera `Retry-After`.
+  - `PagosRechazado(motivo, status)` para los 4xx (el cobro seguro no se aplicó).
 - Mientras C no entregue `pagos/`, el orquestador habla con el **stub de Pagos**, que ya es
   idempotente por `cobro_id` y guarda lápida al reembolsar algo inexistente.
 
