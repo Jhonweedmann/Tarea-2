@@ -1,6 +1,8 @@
 """Pruebas del orquestador de la Saga, con Cupos, Pagos, Inscripción y Redis simulados."""
 import tempfile
+import time
 import unittest
+from datetime import datetime, timedelta, timezone
 
 import grpc
 import redis
@@ -15,6 +17,10 @@ from orquestador.app.database import RepositorioSagas, connect  # noqa: E402
 from orquestador.app.idempotencia import Idempotencia  # noqa: E402
 from orquestador.app.inscripcion_client import InscripcionError  # noqa: E402
 from orquestador.app.pagos_client import PagosNoDisponible  # noqa: E402
+from orquestador.app.worker import WorkerCompensaciones  # noqa: E402
+
+# El worker se prueba llamando a procesar() a mano, sin el hilo de fondo.
+main.WORKER_ACTIVO = False
 
 
 # ---------------------------------------------------------------- Servicios simulados
@@ -396,6 +402,75 @@ class SagaTests(unittest.TestCase):
     def test_cuerpo_invalido_responde_422(self):
         r = self.client.post("/matriculas", json={"estudiante_id": ""})
         self.assertEqual((r.status_code, r.headers["content-type"]), (422, "application/problem+json"))
+
+
+class WorkerTests(SagaTests):
+    """Hereda los servicios simulados de SagaTests."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = main.app.state.sagas
+        self.worker = WorkerCompensaciones(self.repo, lambda: main.nueva_saga(main.app),
+                                           espera_base=1, espera_maxima=4, estancada_tras=60)
+
+    def saga_pendiente(self):
+        self.inscripcion.falla_inscribir = InscripcionError("Inscripción respondió 503", status=503)
+        self.pagos.falla_reembolsar = PagosNoDisponible("timeout")
+        saga_id = self.matricular().json()["saga_id"]
+        self.assertEqual(self.repo.obtener(saga_id)["estado"], "COMPENSACION_PENDIENTE")
+        return saga_id
+
+    def test_reintenta_con_backoff_exponencial_hasta_compensar(self):
+        saga_id = self.saga_pendiente()
+        t0 = datetime.now(timezone.utc)
+        esperas = []
+        for _ in range(4):  # sigue fallando: espera 1, 2, 4 y luego el tope de 4 s
+            proximo = self.repo.obtener(saga_id)["proximo_intento"]
+            ahora = datetime.fromisoformat(proximo) if proximo else t0
+            self.assertEqual(self.worker.procesar(ahora), 1)
+            saga = self.repo.obtener(saga_id)
+            esperas.append((datetime.fromisoformat(saga["proximo_intento"]) - ahora).total_seconds())
+        self.assertEqual(esperas, [1, 2, 4, 4])
+        self.assertEqual(saga["intentos_compensacion"], 4)
+        # Antes de que llegue el próximo intento no se vuelve a llamar a Pagos.
+        llamadas = len(self.registro)
+        self.assertEqual(self.worker.procesar(ahora + timedelta(seconds=1)), 0)
+        self.assertEqual(len(self.registro), llamadas)
+
+        self.pagos.falla_reembolsar = None
+        self.worker.procesar(ahora + timedelta(seconds=5))
+        self.assertEqual(self.repo.obtener(saga_id)["estado"], "COMPENSADA")
+        self.assertEqual(self.registro[-2:], ["reembolsar", "liberar_cupo"])
+        self.assertEqual((self.pagos.cobrados(), self.cupos.reservas), ([], {}))
+
+    def test_saga_interrumpida_por_caida_del_orquestador_se_compensa(self):
+        # Simula que el orquestador se cayó mientras cobraba: el cupo quedó reservado.
+        self.repo.crear("saga-x", "est-001", "ARQ-101")
+        self.cupos.reservar("saga-x", "ARQ-101")
+        self.repo.registrar_paso("saga-x", "reservar_cupo", "ok")
+        self.repo.cambiar_estado("saga-x", "CUPO_RESERVADO")
+        self.registro.clear()
+
+        self.assertEqual(self.worker.procesar(), 0)  # todavía no se considera estancada
+        self.worker.procesar(datetime.now(timezone.utc) + timedelta(seconds=120))
+        self.assertEqual(self.repo.obtener("saga-x")["estado"], "COMPENSADA")
+        # El cobro en curso se trata como incierto: se reembolsa por si acaso y luego se libera el cupo.
+        self.assertEqual(self.registro, ["reembolsar", "liberar_cupo"])
+        self.assertEqual(self.cupos.reservas, {})
+
+    def test_el_hilo_arranca_y_se_detiene(self):
+        worker = WorkerCompensaciones(self.repo, lambda: main.nueva_saga(main.app), intervalo=0.01)
+        saga_id = self.saga_pendiente()
+        self.pagos.falla_reembolsar = None
+        worker.iniciar()
+        try:
+            for _ in range(200):
+                if self.repo.obtener(saga_id)["estado"] == "COMPENSADA":
+                    break
+                time.sleep(0.01)
+        finally:
+            worker.detener()
+        self.assertEqual(self.repo.obtener(saga_id)["estado"], "COMPENSADA")
 
 
 if __name__ == "__main__":

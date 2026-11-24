@@ -23,12 +23,15 @@ from .idempotencia import Idempotencia, IdempotenciaNoDisponible
 from .inscripcion_client import InscripcionClient
 from .pagos_client import PagosClient
 from .saga import FallaPaso, Saga
+from .worker import WorkerCompensaciones
 
 DB_PATH = os.getenv("ORQUESTADOR_DB", "/data/orquestador.db")
 # Monto de la matrícula en pesos. Lo fija el orquestador, no el cliente.
 MONTO = int(os.getenv("MATRICULA_MONTO", "150000"))
 # Base 1 de Redis: la 0 la usa el rate limit del gateway.
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/1")
+# Worker de compensaciones pendientes (las pruebas lo apagan y llaman a procesar() a mano).
+WORKER_ACTIVO = os.getenv("WORKER_ACTIVO", "1") == "1"
 
 
 @asynccontextmanager
@@ -41,7 +44,18 @@ async def lifespan(app: FastAPI):
     idempotencia = Idempotencia(redis.Redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=0.5,
                                                      socket_connect_timeout=0.5))
     app.state.idempotencia = idempotencia
+    worker = WorkerCompensaciones(
+        app.state.sagas, lambda: nueva_saga(app),
+        intervalo=float(os.getenv("WORKER_INTERVALO_SECONDS", "2")),
+        espera_base=float(os.getenv("WORKER_ESPERA_BASE_SECONDS", "1")),
+        espera_maxima=float(os.getenv("WORKER_ESPERA_MAXIMA_SECONDS", "60")),
+        estancada_tras=float(os.getenv("SAGA_ESTANCADA_SECONDS", "60")),
+    )
+    app.state.worker = worker
+    if WORKER_ACTIVO:
+        worker.iniciar()
     yield
+    worker.detener()
     for cliente in (*clientes, idempotencia):
         cliente.close()
     db.close()

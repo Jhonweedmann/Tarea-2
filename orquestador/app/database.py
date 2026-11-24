@@ -106,6 +106,24 @@ class RepositorioSagas:
             fila = self.db.execute("SELECT * FROM sagas WHERE saga_id = ?", (saga_id,)).fetchone()
         return dict(fila) if fila else None
 
+    def pendientes(self, hasta: str) -> list[str]:
+        """Sagas en COMPENSACION_PENDIENTE cuyo próximo intento ya llegó (o que aún no tienen uno)."""
+        with self.lock:
+            filas = self.db.execute(
+                "SELECT saga_id FROM sagas WHERE estado = 'COMPENSACION_PENDIENTE'"
+                " AND (proximo_intento IS NULL OR proximo_intento <= ?) ORDER BY actualizada_en", (hasta,)
+            ).fetchall()
+        return [fila["saga_id"] for fila in filas]
+
+    def estancadas(self, sin_cambios_desde: str) -> list[dict]:
+        """Sagas a medio camino que no avanzan desde hace rato: el orquestador se cayó mientras corrían."""
+        with self.lock:
+            filas = self.db.execute(
+                "SELECT * FROM sagas WHERE estado IN ('INICIADA', 'CUPO_RESERVADO', 'PAGO_COBRADO', 'COMPENSANDO')"
+                " AND actualizada_en < ? ORDER BY actualizada_en", (sin_cambios_desde,)
+            ).fetchall()
+        return [dict(fila) for fila in filas]
+
     def pasos(self, saga_id: str) -> list[dict]:
         with self.lock:
             filas = self.db.execute(
