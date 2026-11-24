@@ -30,6 +30,37 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Salud'}
 
+  /admin/falla:
+    get:
+      tags: [operacion]
+      summary: Consulta la falla inyectada vigente
+      responses:
+        '200':
+          description: Configuración vigente
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Falla'}
+    post:
+      tags: [operacion]
+      summary: Inyecta latencia, caída o errores al azar (para el escenario 2)
+      description: >-
+        Solo los campos enviados cambian. Con caido=true todo lo que no sea /health,
+        /metrics ni /admin/* responde 503; tasa_error (0 a 1) responde 500 al azar;
+        latencia_ms agrega una espera antes de responder. No es pública: el gateway no
+        la enruta.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Falla'}
+      responses:
+        '200':
+          description: Configuración vigente tras el cambio
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Falla'}
+        '422': {$ref: '#/components/responses/Invalida'}
+
   /estudiantes:
     get:
       tags: [estudiantes]
@@ -123,6 +154,8 @@ paths:
             application/problem+json:
               schema: {$ref: '#/components/schemas/Problema'}
         '422': {$ref: '#/components/responses/Invalida'}
+        '500': {$ref: '#/components/responses/FallaInyectada'}
+        '503': {$ref: '#/components/responses/FallaInyectada'}
 
   /inscripciones/{inscripcion_id}:
     parameters:
@@ -154,6 +187,8 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Inscripcion'}
+        '500': {$ref: '#/components/responses/FallaInyectada'}
+        '503': {$ref: '#/components/responses/FallaInyectada'}
 
 components:
   parameters:
@@ -191,6 +226,13 @@ components:
       content:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problema'}
+    FallaInyectada:
+      description: >-
+        Falla configurada con /admin/falla (503 con caido=true, 500 al azar con
+        tasa_error). El orquestador la trata como falla del paso y compensa.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problema'}
 
   schemas:
     Salud:
@@ -199,6 +241,13 @@ components:
       required: [status]
       properties:
         status: {type: string, enum: [ok]}
+
+    Falla:
+      type: object
+      properties:
+        latencia_ms: {type: integer, minimum: 0, maximum: 60000}
+        caido: {type: boolean}
+        tasa_error: {type: number, minimum: 0, maximum: 1}
 
     EstudianteEntrada:
       type: object

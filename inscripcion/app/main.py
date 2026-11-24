@@ -22,7 +22,10 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, EmailStr, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from comun.observabilidad import instrumentar, obtener_logger
+
 from .database import connect
+from .fallas import instalar_fallas
 
 DB_PATH = os.getenv("INSCRIPCION_DB", "/data/inscripcion.db")
 CONTRATO = Path(__file__).resolve().parents[1] / "openapi.yaml"
@@ -43,6 +46,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Servicio de Inscripción", version="2.0.0", lifespan=lifespan)
+# /admin/falla permite hacer fallar el paso 3 de la Saga (escenario 2).
+instalar_fallas(app)
+# Despues de las fallas, para que los errores y la latencia inyectados tambien queden en las
+# metricas. Agrega logs JSON con X-Correlation-Id, metricas HTTP y GET /metrics.
+instrumentar(app, "inscripcion")
+log = obtener_logger("inscripcion")
 
 # Contract-first: el servicio publica el openapi.yaml escrito a mano, no uno generado desde el código.
 _contrato = yaml.safe_load(CONTRATO.read_text(encoding="utf-8"))
@@ -177,6 +186,7 @@ def inscribir(payload: InscripcionIn, request: Request, response: Response):
             if (previa["estudiante_id"], previa["curso_id"]) != (payload.estudiante_id, payload.curso_id):
                 raise Problema(409, "inscripcion_id en uso", "Ese inscripcion_id ya se usó con otro estudiante o curso.")
             # Repeticion de la misma llamada: se devuelve lo guardado con 200, sin crear otra.
+            log.info("inscripcion repetida", extra={"saga_id": payload.inscripcion_id, "paso": "inscribir"})
             return JSONResponse(status_code=200, content=representacion_inscripcion(previa))
 
         if not db.execute("SELECT 1 FROM estudiantes WHERE id=?", (payload.estudiante_id,)).fetchone():
@@ -190,6 +200,8 @@ def inscribir(payload: InscripcionIn, request: Request, response: Response):
             db.rollback()
             raise Problema(409, "Inscripción duplicada",
                            "El estudiante ya tiene una inscripción activa en este curso.")
+        log.info("inscripcion creada", extra={"saga_id": payload.inscripcion_id, "paso": "inscribir",
+                                              "estudiante_id": payload.estudiante_id, "curso_id": payload.curso_id})
         response.headers["Location"] = f"/inscripciones/{payload.inscripcion_id}"
         return representacion_inscripcion(buscar_inscripcion(db, payload.inscripcion_id))
 
@@ -206,10 +218,12 @@ def dar_baja(inscripcion_id: str, request: Request):
             db.execute("INSERT INTO inscripciones VALUES (?, NULL, NULL, 'baja', ?, ?)",
                        (inscripcion_id, marca, marca))
             db.commit()
+            log.info("baja sin inscripcion previa: lapida", extra={"saga_id": inscripcion_id, "paso": "dar_baja"})
         elif previa["estado"] == "activa":
             db.execute("UPDATE inscripciones SET estado='baja', actualizada_en=? WHERE inscripcion_id=?",
                        (ahora(), inscripcion_id))
             db.commit()
+            log.info("inscripcion dada de baja", extra={"saga_id": inscripcion_id, "paso": "dar_baja"})
         # Si ya estaba de baja no se hace nada: la compensacion es idempotente.
         return representacion_inscripcion(buscar_inscripcion(db, inscripcion_id))
 

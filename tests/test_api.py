@@ -147,6 +147,28 @@ class ApiContratoTests(unittest.TestCase):
         self.cumple_contrato(r, "/inscripciones", "get")
         self.assertEqual(r.status_code, 422)
 
+    # --- Inyección de fallas y observabilidad ---
+
+    def test_admin_falla_hace_fallar_el_paso_3_sin_afectar_health(self):
+        estudiante = self.crear_estudiante()
+        try:
+            r = self.client.post("/admin/falla", json={"caido": True})
+            self.assertTrue(self.cumple_contrato(r, "/admin/falla", "post")["caido"])
+            r, _ = self.inscribir("saga-1", estudiante["id"])
+            self.assertEqual(r.status_code, 503)
+            self.assertEqual(self.client.get("/health").status_code, 200)
+            self.assertEqual(self.client.get("/metrics").status_code, 200)
+        finally:
+            self.client.post("/admin/falla", json={"caido": False})
+        r, _ = self.inscribir("saga-1", estudiante["id"])
+        self.assertEqual(r.status_code, 201)
+
+    def test_propaga_correlation_id_y_expone_metricas(self):
+        r = self.client.get("/estudiantes", headers={"X-Correlation-Id": "demo-1"})
+        self.assertEqual(r.headers["x-correlation-id"], "demo-1")
+        metricas = self.client.get("/metrics").text
+        self.assertIn('http_requests_total{route="/estudiantes",service="inscripcion",status="200"}', metricas)
+
     # --- Formato uniforme de errores ---
 
     def test_ruta_y_metodo_inexistentes_responden_problem_json(self):
