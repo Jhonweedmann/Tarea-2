@@ -22,7 +22,7 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(service.methods_by_name["ListarCursos"].server_streaming)
 
     def test_openapi_declares_v1_auth_and_problem_responses(self):
-        contract = yaml.safe_load((ROOT / "matriculas" / "openapi.yaml").read_text(encoding="utf-8"))
+        contract = yaml.safe_load((ROOT / "inscripcion" / "openapi.yaml").read_text(encoding="utf-8"))
         self.assertIn("bearerAuth", contract["components"]["securitySchemes"])
         self.assertIn("/v1/matriculas", contract["paths"])
         for nombre, respuesta in contract["components"]["responses"].items():

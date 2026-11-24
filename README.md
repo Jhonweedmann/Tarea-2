@@ -156,8 +156,8 @@ Los stubs Python de gRPC (`cupos_pb2*.py`) no se versionan: los Dockerfiles los 
 
 ## Antecedentes (Tarea 1)
 
-`matriculas/` (REST) y `cupos/` (gRPC) son el punto de partida; su contrato REST sigue en
-[matriculas/openapi.yaml](matriculas/openapi.yaml) hasta que B lo convierta en `inscripcion/`.
+`matriculas/` (REST, renombrado a `inscripcion/`) y `cupos/` (gRPC) son el punto de partida; su
+contrato REST está en [inscripcion/openapi.yaml](inscripcion/openapi.yaml).
 Datos crudos de sus experimentos en [docs/resultados](docs/resultados). El cliente Node de gRPC
 sigue disponible con `docker compose --profile demo run --rm cupos-node-client`.
 

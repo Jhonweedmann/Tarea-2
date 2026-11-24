@@ -12,10 +12,10 @@ from jsonschema import Draft202012Validator
 from scripts.generar_stubs import generar
 
 generar()
-from matriculas.app import main  # noqa: E402
-from matriculas.app.cupos_pb2 import Curso  # noqa: E402
+from inscripcion.app import main  # noqa: E402
+from inscripcion.app.cupos_pb2 import Curso  # noqa: E402
 
-SPEC = yaml.safe_load((Path(__file__).parents[1] / "matriculas" / "openapi.yaml").read_text(encoding="utf-8"))
+SPEC = yaml.safe_load((Path(__file__).parents[1] / "inscripcion" / "openapi.yaml").read_text(encoding="utf-8"))
 ESCRITURA = {"Authorization": "Bearer desarrollo-seguro"}
 LECTURA = {"Authorization": "Bearer solo-lectura"}
 
