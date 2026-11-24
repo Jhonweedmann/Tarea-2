@@ -3,6 +3,7 @@ import tempfile
 import unittest
 
 import grpc
+import redis
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 
@@ -11,6 +12,7 @@ from scripts.generar_stubs import generar
 generar()
 from orquestador.app import main  # noqa: E402
 from orquestador.app.database import RepositorioSagas, connect  # noqa: E402
+from orquestador.app.idempotencia import Idempotencia  # noqa: E402
 from orquestador.app.inscripcion_client import InscripcionError  # noqa: E402
 from orquestador.app.pagos_client import PagosNoDisponible  # noqa: E402
 
@@ -113,6 +115,34 @@ class InscripcionFalsa:
         return [i for i, estado in self.inscripciones.items() if estado == "activa"]
 
 
+class RedisFalso:
+    def __init__(self):
+        self.datos = {}
+        self.caido = False
+
+    def _verificar(self):
+        if self.caido:
+            raise redis.ConnectionError("Redis caído")
+
+    def set(self, clave, valor, nx=False, ex=None):
+        self._verificar()
+        if nx and clave in self.datos:
+            return None
+        self.datos[clave] = valor
+        return True
+
+    def get(self, clave):
+        self._verificar()
+        return self.datos.get(clave)
+
+    def delete(self, clave):
+        self._verificar()
+        self.datos.pop(clave, None)
+
+    def close(self):
+        pass
+
+
 def sagas_con_resultado(resultado):
     return REGISTRY.get_sample_value("saga_total", {"resultado": resultado}) or 0
 
@@ -187,6 +217,8 @@ class SagaTests(unittest.TestCase):
         self.cupos = main.app.state.cupos = CuposFalso(self.registro)
         self.pagos = main.app.state.pagos = PagosFalso(self.registro)
         self.inscripcion = main.app.state.inscripcion = InscripcionFalsa(self.registro)
+        self.redis = RedisFalso()
+        main.app.state.idempotencia = Idempotencia(self.redis)
 
     def tearDown(self):
         self.client.__exit__(None, None, None)
@@ -312,6 +344,54 @@ class SagaTests(unittest.TestCase):
         self.assertTrue(saga.compensar(saga_id))
         self.assertEqual(self.client.get(f"/sagas/{saga_id}").json()["estado"], "COMPENSADA")
         self.assertEqual((self.pagos.cobrados(), self.cupos.reservas), ([], {}))
+
+    # --- Idempotency-Key: reintentar no cobra dos veces ---
+
+    def test_misma_clave_dos_veces_cobra_una_sola_vez(self):
+        primera = self.matricular(headers={"Idempotency-Key": "k-1"})
+        segunda = self.matricular(headers={"Idempotency-Key": "k-1"})
+        self.assertEqual((primera.status_code, segunda.status_code), (201, 200))
+        self.assertEqual(segunda.headers["idempotent-replay"], "true")
+        self.assertEqual(segunda.json(), primera.json())
+        self.assertEqual(self.registro, ["reservar_cupo", "cobrar", "inscribir"])
+        self.assertEqual(len(self.pagos.cobros), 1)
+
+    def test_clave_en_proceso_responde_409_sin_llamar_a_nadie(self):
+        main.app.state.sagas.crear("saga-en-curso", "est-001", "ARQ-101", "k-2")
+        self.redis.datos[Idempotencia.PREFIJO + "k-2"] = "saga-en-curso"
+        r = self.matricular(headers={"Idempotency-Key": "k-2"})
+        self.assertEqual((r.status_code, r.json()["saga_id"]), (409, "saga-en-curso"))
+        self.assertEqual(self.registro, [])
+
+    def test_si_la_saga_falla_la_clave_queda_libre_para_reintentar(self):
+        self.inscripcion.falla_inscribir = InscripcionError("Inscripción respondió 503", status=503)
+        fallida = self.matricular(headers={"Idempotency-Key": "k-3"})
+        self.assertEqual(fallida.status_code, 502)
+        self.inscripcion.falla_inscribir = None
+        reintento = self.matricular(headers={"Idempotency-Key": "k-3"})
+        self.assertEqual(reintento.status_code, 201)
+        self.assertNotEqual(reintento.json()["saga_id"], fallida.json()["saga_id"])
+        self.assertEqual(self.pagos.cobrados(), [reintento.json()["saga_id"]])
+
+    def test_clave_de_saga_fallida_no_soltada_se_reutiliza(self):
+        main.app.state.sagas.crear("saga-vieja", "est-001", "ARQ-101", "k-4")
+        main.app.state.sagas.cambiar_estado("saga-vieja", "COMPENSADA")
+        self.redis.datos[Idempotencia.PREFIJO + "k-4"] = "saga-vieja"
+        self.assertEqual(self.matricular(headers={"Idempotency-Key": "k-4"}).status_code, 201)
+
+    def test_clave_reutilizada_con_otro_cuerpo_responde_422(self):
+        self.matricular(headers={"Idempotency-Key": "k-5"})
+        r = self.matricular(curso_id="API-201", headers={"Idempotency-Key": "k-5"})
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual(self.registro, ["reservar_cupo", "cobrar", "inscribir"])
+
+    def test_redis_caido_con_clave_responde_503_sin_matricular(self):
+        self.redis.caido = True
+        r = self.matricular(headers={"Idempotency-Key": "k-6"})
+        self.assertEqual((r.status_code, r.headers["retry-after"]), (503, "5"))
+        self.assertEqual(self.registro, [])
+        # Sin Idempotency-Key no se necesita Redis.
+        self.assertEqual(self.matricular().status_code, 201)
 
     def test_cuerpo_invalido_responde_422(self):
         r = self.client.post("/matriculas", json={"estudiante_id": ""})

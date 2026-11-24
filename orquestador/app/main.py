@@ -8,7 +8,8 @@ import uuid
 from contextlib import asynccontextmanager
 from http import HTTPStatus
 
-from fastapi import FastAPI, Request
+import redis
+from fastapi import FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -17,7 +18,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from comun.observabilidad import instrumentar, obtener_logger
 
 from .cupos_client import CuposClient
-from .database import RepositorioSagas, connect
+from .database import ESTADOS_FINALES, RepositorioSagas, connect
+from .idempotencia import Idempotencia, IdempotenciaNoDisponible
 from .inscripcion_client import InscripcionClient
 from .pagos_client import PagosClient
 from .saga import FallaPaso, Saga
@@ -25,6 +27,8 @@ from .saga import FallaPaso, Saga
 DB_PATH = os.getenv("ORQUESTADOR_DB", "/data/orquestador.db")
 # Monto de la matrícula en pesos. Lo fija el orquestador, no el cliente.
 MONTO = int(os.getenv("MATRICULA_MONTO", "150000"))
+# Base 1 de Redis: la 0 la usa el rate limit del gateway.
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/1")
 
 
 @asynccontextmanager
@@ -33,8 +37,12 @@ async def lifespan(app: FastAPI):
     app.state.sagas = RepositorioSagas(db)
     clientes = (CuposClient(), PagosClient(), InscripcionClient())
     app.state.cupos, app.state.pagos, app.state.inscripcion = clientes
+    # Timeouts cortos: si Redis no responde, se rechaza rápido en vez de colgar la petición.
+    idempotencia = Idempotencia(redis.Redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=0.5,
+                                                     socket_connect_timeout=0.5))
+    app.state.idempotencia = idempotencia
     yield
-    for cliente in clientes:
+    for cliente in (*clientes, idempotencia):
         cliente.close()
     db.close()
 
@@ -121,13 +129,53 @@ def respuesta_saga(request: Request, saga_id: str, falla: FallaPaso | None) -> J
                    saga_id=saga_id, estado=cuerpo["estado"], _links=cuerpo["_links"])
 
 
+def usar_clave(request: Request, clave: str, saga_id: str, payload: MatriculaIn) -> JSONResponse | None:
+    """Reserva la Idempotency-Key para esta saga. Devuelve None si esta petición puede seguir, o la
+    respuesta a enviar si la clave ya se usó (repetición, en proceso o Redis caído)."""
+    idempotencia: Idempotencia = request.app.state.idempotencia
+    repo: RepositorioSagas = request.app.state.sagas
+    for _ in range(2):
+        try:
+            previa = idempotencia.reservar(clave, saga_id)
+        except IdempotenciaNoDisponible:
+            return problem(503, "Idempotencia no disponible",
+                           "No se puede garantizar Idempotency-Key en este momento; reintente más tarde.",
+                           headers={"Retry-After": "5"})
+        if previa is None:
+            return None
+        saga = repo.obtener(previa) if previa else None
+        if saga is not None and saga["estado"] == "COMPLETADA":
+            if (saga["estudiante_id"], saga["curso_id"]) != (payload.estudiante_id, payload.curso_id):
+                return problem(422, "Idempotency-Key reutilizada",
+                               "Esta Idempotency-Key ya se usó con otro estudiante o curso.")
+            # Repetición de una matrícula ya hecha: se devuelve la misma, sin volver a cobrar.
+            return JSONResponse(status_code=200, content=representacion(request, previa),
+                                headers={"Location": f"/sagas/{previa}", "Idempotent-Replay": "true"})
+        if saga is not None and saga["estado"] in ESTADOS_FINALES:
+            # Saga fallida cuya clave no se alcanzó a soltar: se suelta y se reintenta.
+            idempotencia.liberar(clave, previa)
+            continue
+        if previa:
+            return problem(409, "Solicitud en proceso",
+                           "Ya se está procesando una matrícula con esta Idempotency-Key.", saga_id=previa)
+    return problem(409, "Solicitud en proceso", "Ya se está procesando una matrícula con esta Idempotency-Key.")
+
+
 @app.post("/matriculas", status_code=201)
-def crear_matricula(payload: MatriculaIn, request: Request):
+def crear_matricula(payload: MatriculaIn, request: Request,
+                    idempotency_key: str | None = Header(default=None, max_length=128)):
     saga_id = str(uuid.uuid4())
-    request.app.state.sagas.crear(saga_id, payload.estudiante_id, payload.curso_id)
+    if idempotency_key and (respuesta := usar_clave(request, idempotency_key, saga_id, payload)) is not None:
+        return respuesta
+    request.app.state.sagas.crear(saga_id, payload.estudiante_id, payload.curso_id, idempotency_key)
     log.info("saga iniciada", extra={"saga_id": saga_id, "estudiante_id": payload.estudiante_id,
                                      "curso_id": payload.curso_id})
     falla = nueva_saga(request.app).ejecutar(saga_id)
+    if idempotency_key and falla is not None:
+        # La matrícula no quedó hecha y lo aplicado se deshizo (o el worker lo está deshaciendo):
+        # se suelta la clave para que el cliente pueda reintentar con ella. Una saga nueva usa otro
+        # saga_id, así que no puede cobrar dos veces lo mismo.
+        request.app.state.idempotencia.liberar(idempotency_key, saga_id)
     return respuesta_saga(request, saga_id, falla)
 
 

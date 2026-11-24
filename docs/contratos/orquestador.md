@@ -22,13 +22,19 @@ vuelve a validar. El monto lo fija el orquestador (`MATRICULA_MONTO`, por defect
 |---|---|---|
 | Saga completada | `201` + `Location: /sagas/{saga_id}` | representación de la saga |
 | Repetición con la misma `Idempotency-Key` | `200` + `Idempotent-Replay: true` | la misma representación guardada |
-| Misma `Idempotency-Key` aún en proceso | `409` | problem+json |
+| Misma `Idempotency-Key` aún en proceso | `409` | problem+json con el `saga_id` que la tiene |
+| Misma `Idempotency-Key` con otro estudiante o curso | `422` | problem+json |
+| Se envió `Idempotency-Key` y Redis no responde | `503` + `Retry-After` | problem+json (no se crea la saga) |
 | Estudiante o curso no existe | `404` | problem+json con `saga_id`, estado `ABORTADA_NO_ENCONTRADO` |
 | Sin cupo (falla el paso 1, no se cobra) | `409` | problem+json con `saga_id`, estado `ABORTADA_SIN_CUPO` |
 | Cupos no responde (se libera la reserva por si acaso) | `503` + `Retry-After` | problem+json con `saga_id`, estado `COMPENSADA` |
 | Pagos no disponible / circuito abierto | `503` + `Retry-After` | problem+json con `saga_id`, estado `ABORTADA_PAGOS_NO_DISPONIBLE` |
 | Falla un paso posterior y se compensa | `502` (o `409`/`404` si es de negocio) | problem+json con `saga_id`, estado `COMPENSADA` |
 | Una compensación falla | el código del paso que falló | problem+json con `saga_id`, estado `COMPENSACION_PENDIENTE` (el worker la termina) |
+
+La clave se guarda en Redis (base 1) por 24 h y apunta al `saga_id`. Solo una saga `COMPLETADA`
+conserva su clave: si la saga falla, la clave se suelta para que el cliente pueda reintentar con
+ella (la saga nueva usa otro `saga_id`, así que no puede cobrar dos veces lo mismo).
 
 Los problem+json de la saga incluyen `saga_id`, `estado` y `_links.self` para consultar el historial.
 
