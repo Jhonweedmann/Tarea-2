@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 from concurrent import futures
@@ -7,6 +8,7 @@ import grpc
 
 from . import cupos_pb2, cupos_pb2_grpc
 from .database import connect, seed
+from .logs import registrar
 
 
 class CuposService(cupos_pb2_grpc.CuposServicer):
@@ -71,24 +73,31 @@ class CuposService(cupos_pb2_grpc.CuposServicer):
             reserva_id=row["reserva_id"], curso_id=row["curso_id"] or "", estado=row["estado"], curso=curso,
         )
 
+    @staticmethod
+    def _rechazar(context, request, codigo, mensaje):
+        registrar(context, "operacion rechazada", logging.WARNING, saga_id=request.reserva_id,
+                  codigo=codigo.name, motivo=mensaje)
+        context.abort(codigo, mensaje)
+
     def ReservarCupo(self, request, context):
         if not request.reserva_id:
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "reserva_id es obligatorio")
+            self._rechazar(context, request, grpc.StatusCode.INVALID_ARGUMENT, "reserva_id es obligatorio")
         with self.lock:
             existente = self._buscar_reserva(request.reserva_id)
             if existente:
                 if existente["estado"] == "liberada":
                     # Lapida: la compensacion llego antes (timeout ambiguo). No se reserva.
-                    context.abort(grpc.StatusCode.FAILED_PRECONDITION, "La reserva ya fue liberada")
+                    self._rechazar(context, request, grpc.StatusCode.FAILED_PRECONDITION, "La reserva ya fue liberada")
                 if existente["curso_id"] != request.curso_id:
-                    context.abort(grpc.StatusCode.INVALID_ARGUMENT, "reserva_id ya usado para otro curso")
+                    self._rechazar(context, request, grpc.StatusCode.INVALID_ARGUMENT, "reserva_id ya usado para otro curso")
+                registrar(context, "reserva repetida, no se descuenta", saga_id=request.reserva_id)
                 return self._reserva(existente)  # repeticion: no se descuenta otra vez
 
             curso = self.db.execute("SELECT * FROM cursos WHERE id = ?", (request.curso_id,)).fetchone()
             if not curso:
-                context.abort(grpc.StatusCode.NOT_FOUND, "Curso no encontrado")
+                self._rechazar(context, request, grpc.StatusCode.NOT_FOUND, "Curso no encontrado")
             if curso["cupos_disponibles"] == 0:
-                context.abort(grpc.StatusCode.FAILED_PRECONDITION, "No hay cupos disponibles")
+                self._rechazar(context, request, grpc.StatusCode.FAILED_PRECONDITION, "No hay cupos disponibles")
 
             ahora = _ahora()
             # Descontar el cupo y registrar la reserva en una sola transaccion:
@@ -101,11 +110,13 @@ class CuposService(cupos_pb2_grpc.CuposServicer):
                     "INSERT INTO reservas VALUES (?, ?, 'reservada', ?, ?)",
                     (request.reserva_id, request.curso_id, ahora, ahora),
                 )
+            registrar(context, "cupo reservado", saga_id=request.reserva_id, curso_id=request.curso_id,
+                      cupos_disponibles=curso["cupos_disponibles"] - 1)
             return self._reserva(self._buscar_reserva(request.reserva_id))
 
     def LiberarReserva(self, request, context):
         if not request.reserva_id:
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "reserva_id es obligatorio")
+            self._rechazar(context, request, grpc.StatusCode.INVALID_ARGUMENT, "reserva_id es obligatorio")
         with self.lock:
             existente = self._buscar_reserva(request.reserva_id)
             if not existente:
@@ -116,6 +127,7 @@ class CuposService(cupos_pb2_grpc.CuposServicer):
                     self.db.execute(
                         "INSERT INTO reservas VALUES (?, NULL, 'liberada', ?, ?)", (request.reserva_id, ahora, ahora)
                     )
+                registrar(context, "liberar sin reserva previa: lapida", saga_id=request.reserva_id)
             elif existente["estado"] == "reservada":
                 with self.db:
                     self.db.execute(
@@ -126,7 +138,10 @@ class CuposService(cupos_pb2_grpc.CuposServicer):
                         "UPDATE reservas SET estado = 'liberada', actualizada_en = ? WHERE reserva_id = ?",
                         (_ahora(), request.reserva_id),
                     )
-            # Si ya estaba liberada no se hace nada: la compensacion es idempotente.
+                registrar(context, "reserva liberada", saga_id=request.reserva_id, curso_id=existente["curso_id"])
+            else:
+                # Ya estaba liberada: no se hace nada, la compensacion es idempotente.
+                registrar(context, "liberacion repetida, no se suma", saga_id=request.reserva_id)
             return self._reserva(self._buscar_reserva(request.reserva_id))
 
 
