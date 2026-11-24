@@ -1,8 +1,8 @@
 # Forma K — Unidad 3. Arquitectura en docs/PLAN.md §1, contratos en docs/contratos/.
 #
 # Solo el gateway publica un puerto (8080). Grafana publica el 3000 solo para la demo.
-# orquestador, inscripcion y pagos corren hoy con los stubs (stubs/); B y C reemplazan cada uno
-# su bloque por la imagen real (ver docs/TRASPASO.md). El resto de este archivo no cambia.
+# orquestador e inscripcion son los servicios reales de B; pagos corre hoy con el stub (stubs/)
+# hasta que C reemplace su bloque por la imagen real (ver docs/TRASPASO.md).
 
 x-healthcheck-http: &healthcheck-http
   test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
@@ -58,26 +58,43 @@ services:
 
   # ---------------------------------------------------------------- Persona B: Saga
   orquestador:
-    # TODO(B): reemplazar por la imagen real:
-    #   build: {context: ., dockerfile: orquestador/Dockerfile}
-    #   environment: {ORQUESTADOR_DB: /data/orquestador.db, CUPOS_GRPC_TARGET: cupos:50051,
-    #                 INSCRIPCION_URL: http://inscripcion:8000, PAGOS_URL: http://pagos:8000,
-    #                 REDIS_URL: redis://redis:6379/1}
-    #   volumes: [orquestador_data:/data]
     build:
       context: .
-      dockerfile: stubs/Dockerfile
+      dockerfile: orquestador/Dockerfile
     environment:
-      STUB_SERVICIO: orquestador
+      ORQUESTADOR_DB: /data/orquestador.db
+      CUPOS_GRPC_TARGET: cupos:50051
+      INSCRIPCION_URL: http://inscripcion:8000
+      PAGOS_URL: http://pagos:8000
+      # Base 1: la 0 la usa el rate limit del gateway.
+      REDIS_URL: redis://redis:6379/1
+      MATRICULA_MONTO: "150000"
+      # Timeout de cada llamada de la Saga (peor caso ~14 s, bajo los 15 s del gateway).
+      CUPOS_TIMEOUT_SECONDS: "2"
+      INSCRIPCION_TIMEOUT_SECONDS: "2"
+      PAGOS_TIMEOUT_SECONDS: "2"
+    volumes:
+      - orquestador_data:/data
     healthcheck: *healthcheck-http
+    depends_on:
+      redis:
+        condition: service_healthy
+      # Cupos, Inscripción y Pagos no son requisito para arrancar: si faltan, la Saga falla y compensa.
+      cupos:
+        condition: service_started
+      inscripcion:
+        condition: service_started
+      pagos:
+        condition: service_started
 
   inscripcion:
-    # TODO(B): reemplazar por inscripcion/ (refactor de matriculas/) con su volumen inscripcion_data.
     build:
       context: .
-      dockerfile: stubs/Dockerfile
+      dockerfile: inscripcion/Dockerfile
     environment:
-      STUB_SERVICIO: inscripcion
+      INSCRIPCION_DB: /data/inscripcion.db
+    volumes:
+      - inscripcion_data:/data
     healthcheck: *healthcheck-http
 
   cupos:
@@ -143,3 +160,5 @@ services:
 
 volumes:
   cupos_data:
+  inscripcion_data:
+  orquestador_data:
