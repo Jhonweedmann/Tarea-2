@@ -146,17 +146,17 @@ Las rutas públicas quedaron bajo `/api/v1/...` (ADR-003).
 
 **Carpetas:** `pagos/`, `orquestador/app/pagos_client.py`, `orquestador/app/resiliencia.py`, `experimentos/`
 
-- [ ] `pagos/`: servicio con BD propia, cobro y reembolso idempotentes por `cobro_id`, y `/admin/falla` para inyectar latencia, caída o tasa de error. Simula la pasarela externa.
-- [ ] `resiliencia.py`: Circuit Breaker (umbral de fallos, ventana, half-open) y Bulkhead (semáforo + pool dedicado), con métricas.
-- [ ] `pagos_client.py`: timeout + retry con backoff (solo para errores reintentables; seguro porque el cobro es idempotente) + CB + bulkhead + fallback. Es lo que llama el orquestador en el paso 2.
-- [ ] Timeouts en **todas** las llamadas entre servicios (revisar las de A y B).
-- [ ] `experimentos/`: script de carga (k6 en un contenedor con `profiles: ["demo"]`, o Python con `httpx` + hilos) y guion reproducible de cada fase:
+- [x] `pagos/`: servicio con BD propia, cobro y reembolso idempotentes por `cobro_id`, y `/admin/falla` para inyectar latencia, caída o tasa de error. Simula la pasarela externa.
+- [x] `resiliencia.py`: Circuit Breaker (umbral de fallos, ventana, half-open) y Bulkhead (semáforo + pool dedicado), con métricas.
+- [x] `pagos_client.py`: timeout + retry con backoff (solo para errores reintentables; seguro porque el cobro es idempotente) + CB + bulkhead + fallback. Es lo que llama el orquestador en el paso 2.
+- [x] Timeouts en **todas** las llamadas entre servicios (revisar las de A y B).
+- [x] `experimentos/`: script de carga (k6 en un contenedor con `profiles: ["demo"]`, o Python con `httpx` + hilos) y guion reproducible de cada fase:
   1. línea base (Pagos sano);
   2. Pagos lento (p. ej. 5 s) → el bulkhead rechaza el exceso y `/api/web/...` y las consultas siguen rápidas;
   3. Pagos caído → el circuito abre y la respuesta baja de ~timeout a ms (fail-fast + fallback);
   4. recuperación → half-open → cerrado.
-- [ ] **Corrida "sin patrón"** (flag `RESILIENCIA=off`) para comparar. La rúbrica pide explicar qué habría pasado sin el patrón, y una medición lo demuestra mejor que un argumento.
-- [ ] ADR-008 Resiliencia (valores de timeout, umbral y tamaño del bulkhead, y su justificación).
+- [x] **Corrida "sin patrón"** (flag `RESILIENCIA=off`) para comparar. La rúbrica pide explicar qué habría pasado sin el patrón, y una medición lo demuestra mejor que un argumento.
+- [x] ADR-008 Resiliencia (valores de timeout, umbral y tamaño del bulkhead, y su justificación).
 - [ ] Datos crudos en `docs/resultados/` + capturas de Grafana del antes y después.
 
 **Escenario a su cargo:** **3 (falla en cascada contenida)**.
@@ -190,10 +190,10 @@ eco.
 
 - [x] Gateway: enruta, autentica y limita · BFF: agrega ≥ 2 servicios (ABET 1)
 - [x] Saga: camino feliz y compensación en orden inverso (ABET 1)
-- [ ] Timeout + CB con fallback + Bulkhead sobre Pagos (ABET 1)
+- [x] Timeout + CB con fallback + Bulkhead sobre Pagos (ABET 1)
 - [x] Justificación de orquestación vs coreografía y de Saga vs 2PC (ABET 2)
 - [x] Diagramas del flujo feliz y de las fallas (ABET 2)
 - [x] Idempotencia en pasos y compensaciones · gateway sin lógica de negocio (ABET 2)
-- [ ] Escenarios reproducibles: lentitud, caída, pico de carga (ABET 6)
+- [x] Escenarios reproducibles: lentitud, caída, pico de carga (ABET 6)
 - [ ] Evidencia del antes/después: métricas, logs, estado del circuito, rechazos (ABET 6)
 - [ ] Interpretación: qué muestra cada gráfico y qué pasaría sin el patrón (ABET 6)

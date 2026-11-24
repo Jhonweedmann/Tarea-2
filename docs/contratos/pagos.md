@@ -2,8 +2,8 @@
 
 Base interna: `http://pagos:8000`. Simula una pasarela de pago externa y frágil. No es pública.
 
-> Hoy lo atiende el stub (`stubs/app/pagos.py`), con un cobro precargado para `est-001` y el
-> mismo `/admin/falla`. C lo reemplaza con el servicio real (BD propia).
+> Lo atiende el servicio real `pagos/` (SQLite propia en `/data/pagos.db`), con un cobro precargado
+> para `est-001`. El stub (`stubs/app/pagos.py`) queda como referencia y ya no está en el compose.
 
 **`POST /cobros`** — paso 2 de la Saga, idempotente por `cobro_id` (= `saga_id`):
 
@@ -15,7 +15,8 @@ Base interna: `http://pagos:8000`. Simula una pasarela de pago externa y frágil
 |---|---|
 | Nuevo | `201` `{"cobro_id", "estudiante_id", "curso_id", "monto", "estado": "cobrado", "creado_en"}` |
 | Mismo `cobro_id` repetido | `200` con lo guardado (**no cobra dos veces**) |
-| `cobro_id` ya reembolsado | `409` |
+| `cobro_id` ya reembolsado (o con lápida) | `409` |
+| `cobro_id` ya usado con otro `estudiante_id`, `curso_id` o `monto` | `409` |
 
 `monto` es un entero en pesos. El orquestador lo toma de su configuración (`MATRICULA_MONTO`).
 

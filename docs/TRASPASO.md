@@ -134,12 +134,33 @@ orquestador puede usar Redis (`redis://redis:6379/1`, base distinta a la del rat
 - Tests del PLAN §4 (B) en verde, ADR-007, diagramas Mermaid y secciones del README
   "Escenario 1" y "Escenario 2" completas.
 
-## Fase C (Persona C) — adelanto
+## Fase C (Persona C) — terminada (falta tu corrida con Docker y las capturas de Grafana)
 
-- Reemplazar el bloque `TODO(C)` de `pagos` en el compose. El contrato está en
-  [contratos/pagos.md](contratos/pagos.md); el stub (`stubs/app/pagos.py` + `fallas.py`) sirve de
-  referencia del comportamiento esperado.
-- Métricas `circuit_state`, `bulkhead_in_flight` y `bulkhead_rejected_total` con las etiquetas
-  de [contratos/README.md](contratos/README.md#métricas): el dashboard ya tiene sus paneles.
-- Para las pruebas de carga usar el token `carga-experimentos` (límite alto), así el rate limit
-  del gateway no contamina las mediciones.
+| Qué | Dónde | Cómo se verificó |
+|---|---|---|
+| Pagos real: BD propia, cobro y reembolso idempotentes por `cobro_id`, lápida, `/admin/falla`, métricas | `pagos/` | `tests/test_pagos.py` + en vivo |
+| Circuit Breaker (ventana de fallos, half-open) y Bulkhead (semáforo no bloqueante) con métricas | `orquestador/app/resiliencia.py` | `tests/test_resiliencia.py` |
+| `PagosClient`: timeout, reintento con backoff (solo `cobrar`), CB, bulkhead, fallback; `RESILIENCIA=off` | `orquestador/app/pagos_client.py` | `tests/test_resiliencia.py`, `tests/test_clientes_orquestador.py` |
+| Compose con Pagos real, volumen `pagos_data` y variables de resiliencia | `docker-compose.yml` | ver abajo |
+| Experimento del escenario 3 (con y sin patrón) + consistencia final | `experimentos/` | corrida completa de ambos modos |
+| ADR-008 | `docs/adr/ADR-008-resiliencia-pagos.md` | — |
+
+La interfaz que dejó B (`PagosNoDisponible(motivo, puede_haberse_aplicado, retry_after)`, `PagosRechazado`) **no cambió**;
+solo se agregó el atributo interno `reintentable`. La Saga (`saga.py`) y `main.py` del orquestador no se tocaron.
+
+Pendiente (no se puede hacer sin tu entorno):
+
+- Correr `python experimentos/experimento.py --modo ambos` con `docker compose` y guardar en `docs/resultados/`
+  los `escenario3-*.json/png/md` **de tu corrida**: los números del ADR-008 son de una corrida de verificación
+  local (sin Docker) y hay que reemplazarlos por los tuyos.
+- Capturas de Grafana del antes y después (paneles de circuito, bulkhead y latencia) para el informe.
+- Informe: sección de resiliencia a partir del ADR-008; el análisis "sin patrón" lo escriben los tres.
+
+### Decisiones y límites que conviene conocer para la defensa
+
+- `RESILIENCIA=off` deja **solo el timeout**: así la comparación aísla el efecto de CB + bulkhead + reintento.
+- Con el circuito abierto el reembolso también se corta: la saga queda `COMPENSACION_PENDIENTE` y el worker la termina
+  cuando Pagos vuelve (consistencia eventual, medida en el experimento).
+- El **panel del BFF** sigue esperando 2 s a Pagos cuando está lento (el BFF no usa el circuit breaker). Es el
+  "costo aceptado" de ADR-006; no es contagio hacia las otras secciones, que responden igual.
+- Estado del circuito en memoria del proceso: vale para una sola instancia del orquestador (igual que el worker).

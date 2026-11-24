@@ -14,9 +14,9 @@ entre integrantes: [docs/TRASPASO.md](docs/TRASPASO.md).
   redis (rate limit + idempotencia) · prometheus · grafana (:3000)
 ```
 
-> **Estado:** gateway, BFF, observabilidad (A) y la Saga con `orquestador`, `inscripcion` y
-> `cupos` (B) están implementados. `pagos` corre todavía como **stub** en memoria (`stubs/`) que
-> cumple su contrato, hasta que C lo reemplace. Ver [docs/TRASPASO.md](docs/TRASPASO.md).
+> **Estado:** gateway, BFF, observabilidad (A), la Saga con `orquestador`, `inscripcion` y `cupos` (B),
+> y `pagos` con la resiliencia del orquestador hacia él (C) están implementados. Ver
+> [docs/TRASPASO.md](docs/TRASPASO.md).
 
 ## Cómo levantarlo
 
@@ -177,7 +177,43 @@ falla la saga queda en `COMPENSACION_PENDIENTE` hasta que el worker la termina
 
 ### Escenario 3 — falla en cascada contenida (C)
 
-_Pendiente: lo completa C (línea base, Pagos lento, Pagos caído, recuperación y corrida sin patrón)._
+Pagos es la dependencia frágil (pasarela externa). El orquestador la llama con **timeout de 2 s,
+reintento con backoff (solo `cobrar`), circuit breaker y bulkhead de 5 llamadas**, y con el circuito
+abierto responde un *fallback* de milisegundos: `503` + `Retry-After`, liberando el cupo
+([ADR-008](docs/adr/ADR-008-resiliencia-pagos.md)).
+
+```bash
+docker compose up --build -d
+python experimentos/experimento.py --modo ambos     # ~6 min: con patrones y "sin patrón" (RESILIENCIA=off)
+```
+
+El script recorre línea base → Pagos lento (con un pico de 30 matrículas/s) → Pagos caído → recuperación,
+mide a la vez la salud del resto del sistema (`GET /sagas/{id}`, `GET /cursos` y el panel del BFF) y
+guarda en `docs/resultados/` los datos crudos (`escenario3-*.json`), un gráfico por corrida y la
+comparación (`escenario3-comparacion.md`). Detalle y cómo leer la evidencia:
+[experimentos/README.md](experimentos/README.md).
+
+**Para hacerlo a mano** (por ejemplo durante el video), con Grafana abierto en http://localhost:3000:
+
+```bash
+# 1. Pagos lento: 5 s por llamada
+docker compose exec pagos python -c "import httpx; print(httpx.post('http://localhost:8000/admin/falla', json={'latencia_ms': 5000}).json())"
+# 2. Pagos caído (503)
+docker compose exec pagos python -c "import httpx; print(httpx.post('http://localhost:8000/admin/falla', json={'latencia_ms': 0, 'caido': True}).json())"
+# 3. Recuperación
+docker compose exec pagos python -c "import httpx; print(httpx.post('http://localhost:8000/admin/falla', json={'caido': False}).json())"
+# Matrícula (observar el tiempo de respuesta y el Retry-After)
+curl -s -o /dev/null -w "%{http_code} en %{time_total}s\n" -X POST localhost:8080/api/v1/matriculas \
+  -H "Authorization: Bearer desarrollo-seguro" -H "Content-Type: application/json" \
+  -d '{"estudiante_id":"est-001","curso_id":"INT-301"}'
+# Estado del circuito y del bulkhead (métricas internas del orquestador)
+docker compose exec orquestador python -c "import urllib.request as u; print(''.join(l for l in u.urlopen('http://localhost:8000/metrics').read().decode().splitlines(True) if l.startswith(('circuit_','bulkhead_','pagos_llamadas'))))"
+```
+
+Qué esperar con los patrones puestos: la primera ráfaga contra el Pagos lento agota 2 s de timeout y
+el circuito abre; desde entonces cada matrícula responde en decenas de milisegundos con `503` +
+`Retry-After`, el cupo queda liberado, y `GET /cursos`, `GET /sagas/{id}` y el panel siguen rápidos.
+Al volver Pagos, el circuito pasa por half-open y cierra, y el worker termina las compensaciones pendientes.
 
 ## Observabilidad
 
@@ -187,8 +223,9 @@ _Pendiente: lo completa C (línea base, Pagos lento, Pagos caído, recuperación
 - Prometheus ([observabilidad/prometheus.yml](observabilidad/prometheus.yml)) recolecta cada 5 s.
   No publica puerto; Grafana lo consulta por la red interna.
 - Dashboard provisionado: [observabilidad/grafana/dashboards/forma-k.json](observabilidad/grafana/dashboards/forma-k.json).
-  El orquestador emite `saga_total{resultado}` (panel de sagas por resultado). Los paneles de
-  circuito y bulkhead muestran "No data" hasta que C emita esas métricas (nombres en
+  El orquestador emite `saga_total{resultado}` (panel de sagas por resultado) y, para la
+  resiliencia hacia Pagos, `circuit_state`, `bulkhead_in_flight`, `bulkhead_rejected_total`,
+  `circuit_rejected_total`, `pagos_llamadas_total` y `pagos_reintentos_total` (nombres en
   [docs/contratos/README.md](docs/contratos/README.md#métricas)).
 
 ## Pruebas
@@ -206,6 +243,8 @@ En Windows con el entorno virtual del proyecto: `.\.venv\Scripts\python` en vez 
 | `tests/test_bff.py` | panel completo, degradación con Pagos caído/lento/503 y con Cupos caído, 404/503/504 del estudiante |
 | `tests/test_orquestador.py` | Saga: camino feliz, falla del paso 3 con compensación en orden inverso, sin cupo sin cobro, Pagos no disponible, compensación pendiente, `Idempotency-Key` (un solo cobro) y worker con backoff |
 | `tests/test_clientes_orquestador.py` | cómo los clientes de Pagos e Inscripción clasifican cada falla (¿pudo aplicarse o no?) |
+| `tests/test_resiliencia.py` | Circuit Breaker (abre, half-open, cierra), Bulkhead, y el cliente de Pagos: reintento con backoff, fallback con el circuito abierto, incertidumbre arrastrada entre intentos, `RESILIENCIA=off` |
+| `tests/test_pagos.py` | Pagos: cobro idempotente por `cobro_id` (incluso con reintentos simultáneos), reembolso con lápida, `/admin/falla` |
 | `tests/test_api.py` | Inscripción contra su `openapi.yaml`: estudiantes, inscripciones idempotentes, lápidas, `/admin/falla` |
 | `tests/test_cupos.py`, `test_contracts.py` | reservas idempotentes de Cupos (con lápida) y contratos `.proto` / OpenAPI |
 
@@ -218,7 +257,8 @@ Los stubs Python de gRPC (`cupos_pb2*.py`) no se versionan: los Dockerfiles los 
 - gRPC: [cupos/cupos.proto](cupos/cupos.proto)
 - Decisiones: [docs/adr](docs/adr) — ADR-001 a ADR-005 vienen de la Tarea 1;
   [ADR-006](docs/adr/ADR-006-gateway-bff.md) Gateway y BFF;
-  [ADR-007](docs/adr/ADR-007-saga-orquestada.md) Saga orquestada (y no 2PC ni coreografía).
+  [ADR-007](docs/adr/ADR-007-saga-orquestada.md) Saga orquestada (y no 2PC ni coreografía);
+  [ADR-008](docs/adr/ADR-008-resiliencia-pagos.md) Resiliencia hacia Pagos (timeout, reintento, circuit breaker, bulkhead).
 - Diagramas de la Saga (Mermaid): [docs/diagramas/saga.md](docs/diagramas/saga.md)
 
 ## Antecedentes (Tarea 1)
