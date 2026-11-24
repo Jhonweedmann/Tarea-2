@@ -28,12 +28,14 @@ def connect(path: str) -> sqlite3.Connection:
 
 
 def seed(db: sqlite3.Connection) -> None:
-    if db.execute("SELECT COUNT(*) FROM cursos").fetchone()[0]:
-        return
+    # INSERT OR IGNORE: agrega los cursos que falten sin tocar los cupos de los que ya existen,
+    # asi un volumen creado antes tambien recibe los cursos nuevos.
     db.executemany(
-        "INSERT INTO cursos VALUES (?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO cursos VALUES (?, ?, ?, ?)",
         [("ARQ-101", "Arquitectura de Sistemas", 2, 2),
          ("API-201", "Integracion de APIs", 1, 1),
-         ("DAT-110", "Fundamentos de Datos", 3, 3)],
+         ("DAT-110", "Fundamentos de Datos", 3, 3),
+         # Curso con muchos cupos para repetir los escenarios de la Saga en la demo.
+         ("INT-301", "Integracion de Sistemas", 30, 30)],
     )
     db.commit()
