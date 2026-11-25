@@ -15,7 +15,10 @@ class CuposService(cupos_pb2_grpc.CuposServicer):
     def __init__(self, database_path: str):
         self.db = connect(database_path)
         seed(self.db)
-        self.lock = threading.Lock()
+        # Todos los hilos de gRPC comparten esta conexion SQLite, que no admite uso simultaneo:
+        # lecturas y escrituras pasan por el lock. Es reentrante porque OcuparCupo y LiberarCupo
+        # llaman a ConsultarCurso mientras ya lo tienen tomado.
+        self.lock = threading.RLock()
 
     @staticmethod
     def _curso(row):
@@ -25,13 +28,18 @@ class CuposService(cupos_pb2_grpc.CuposServicer):
         )
 
     def ConsultarCurso(self, request, context):
-        row = self.db.execute("SELECT * FROM cursos WHERE id = ?", (request.curso_id,)).fetchone()
+        with self.lock:
+            row = self.db.execute("SELECT * FROM cursos WHERE id = ?", (request.curso_id,)).fetchone()
         if not row:
             context.abort(grpc.StatusCode.NOT_FOUND, "Curso no encontrado")
         return self._curso(row)
 
     def ListarCursos(self, request, context):
-        for row in self.db.execute("SELECT * FROM cursos ORDER BY id"):
+        # Se leen todas las filas bajo el lock y se envian despues, para no retenerlo mientras el
+        # stream espera al cliente.
+        with self.lock:
+            filas = self.db.execute("SELECT * FROM cursos ORDER BY id").fetchall()
+        for row in filas:
             yield self._curso(row)
 
     def OcuparCupo(self, request, context):
