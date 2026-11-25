@@ -1,8 +1,8 @@
 # Pruebas manuales a través del gateway, con la extensión REST Client de VS Code.
 # Requisito: el sistema levantado con `docker compose up --build -d`.
 # Cada petición se ejecuta con "Send Request" (o Ctrl+Alt+R).
-# Mientras orquestador, inscripcion y pagos sean stubs, los datos viven en memoria y se reinician
-# con el contenedor. est-001 viene precargado.
+# Todos los servicios son reales y guardan sus datos en volúmenes de Docker; para partir de cero:
+# `docker compose down -v`. est-001 viene precargado en Inscripción.
 
 @base = http://localhost:8080/api/v1
 @token = desarrollo-seguro
@@ -98,19 +98,49 @@ Authorization: Bearer {{token}}
 
 
 # ======================================================================
-# 6. Saga de matrícula (orquestador) — con el stub siempre responde COMPLETADA.
-#    B agrega aquí los casos de compensación.
+# 6. Saga de matrícula (orquestador): reservar cupo -> cobrar -> inscribir.
+#    Usa el estudiante creado en la sección 5 (ejecutar antes "Registrar estudiante").
+#    Escenario 2 (falla del paso 3 con compensación) y escenario 3 (Pagos lento o caído):
+#    ver README, porque /admin/falla no es pública; o `python scripts/escenarios.py 2`.
 # ======================================================================
 
-### Matricular -> 201 + Location: /api/v1/sagas/{id}
+### Escenario 1: matricular -> 201 COMPLETADA + Location: /api/v1/sagas/{id}
 # @name matricula
 POST {{base}}/matriculas
 Authorization: Bearer {{token}}
 Content-Type: application/json
 Idempotency-Key: demo-{{$timestamp}}
+X-Correlation-Id: demo-saga-1
 
-{"estudiante_id": "est-001", "curso_id": "API-201"}
+{"estudiante_id": "{{estudiante.response.body.id}}", "curso_id": "INT-301"}
 
-### Estado de la saga
+### Repetir con la misma Idempotency-Key -> 200 + Idempotent-Replay: true (no vuelve a cobrar)
+POST {{base}}/matriculas
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Idempotency-Key: {{matricula.request.headers.Idempotency-Key}}
+
+{"estudiante_id": "{{estudiante.response.body.id}}", "curso_id": "INT-301"}
+
+### Historial de la saga: validar_estudiante, reservar_cupo, cobrar, inscribir en "ok"
 GET {{base}}/sagas/{{matricula.response.body.saga_id}}
+Authorization: Bearer {{token}}
+
+### Mismo estudiante y curso con otra clave -> 409 COMPENSADA (ya tiene una inscripción activa:
+### Inscripción rechaza el paso 3, se reembolsa y se libera el cupo)
+POST {{base}}/matriculas
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"estudiante_id": "{{estudiante.response.body.id}}", "curso_id": "INT-301"}
+
+### Curso inexistente -> 404 ABORTADA_NO_ENCONTRADO (falla el paso 1, no se cobra)
+POST {{base}}/matriculas
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"estudiante_id": "{{estudiante.response.body.id}}", "curso_id": "NO-EXISTE"}
+
+### Saga inexistente -> 404
+GET {{base}}/sagas/no-existe
 Authorization: Bearer {{token}}

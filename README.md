@@ -72,7 +72,8 @@ curl -i -X POST http://localhost:8080/api/v1/matriculas -H "Authorization: Beare
 ```
 
 **429 al superar el límite, sin afectar a otro cliente** (25 solicitudes de `portal-web` → 20
-responden 200 y 5 responden 429 con `Retry-After`; `secretaria` sigue respondiendo 200):
+responden 200 y el resto 429 con `Retry-After`; `secretaria` sigue respondiendo 200). La ventana
+es fija de 10 s: si se renueva durante el ciclo, las últimas vuelven a responder 200.
 
 ```bash
 for i in $(seq 1 25); do curl -s -o /dev/null -w "%{http_code} " -H "Authorization: Bearer portal-web" http://localhost:8080/api/v1/cursos; done; echo
