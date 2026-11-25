@@ -24,8 +24,10 @@ from .database import connect, seed
 from .fallas import instalar_fallas
 
 DB_PATH = os.getenv("PAGOS_DB", "/data/pagos.db")
-# Precarga el cobro de est-001 para la demo. Las pruebas lo apagan para partir de una BD vacía.
-SEMILLA = os.getenv("PAGOS_SEMILLA", "1") == "1"
+# Cobro de ejemplo de est-001 (el que traía el stub). Desactivado por defecto: es un cobro sin
+# inscripción ni cupo reservado, justo el "cobro sin operación" que la Saga debe evitar, y se vería
+# en el panel del BFF al partir. PAGOS_SEMILLA=1 lo vuelve a cargar si se quiere.
+SEMILLA = os.getenv("PAGOS_SEMILLA", "0") == "1"
 
 OPERACIONES = Counter("pagos_operaciones_total", "Operaciones de Pagos, por tipo de resultado", ["operacion"])
 

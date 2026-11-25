@@ -53,8 +53,8 @@ Contrato completo: [docs/contratos/gateway.md](docs/contratos/gateway.md).
 | `portal-web` | `portal-web` | escritura | 20 / 10 s |
 | `carga-experimentos` | `experimentos` | escritura | 100 000 / 10 s (pruebas de carga) |
 
-El estudiante `est-001` (Ana Pérez) viene precargado en Inscripción, y Pagos trae un cobro de
-ejemplo para él, así el panel tiene datos desde el inicio. Cursos: `ARQ-101` (2 cupos),
+El estudiante `est-001` (Ana Pérez) viene precargado en Inscripción; su panel parte sin
+inscripciones ni cobros y se llena con la primera matrícula. Cursos: `ARQ-101` (2 cupos),
 `API-201` (1), `DAT-110` (3) e `INT-301` (30, para repetir los escenarios en la demo).
 
 Todas las solicitudes del repo también están en [request.http](request.http) (extensión REST

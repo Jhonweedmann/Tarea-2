@@ -2,8 +2,8 @@
 
 Base interna: `http://pagos:8000`. Simula una pasarela de pago externa y frágil. No es pública.
 
-> Lo atiende el servicio real `pagos/` (SQLite propia en `/data/pagos.db`), con un cobro precargado
-> para `est-001`. El stub (`stubs/app/pagos.py`) queda como referencia y ya no está en el compose.
+> Lo atiende el servicio real `pagos/` (SQLite propia en `/data/pagos.db`). Parte sin cobros: el
+> cobro de ejemplo de `est-001` solo se carga con `PAGOS_SEMILLA=1`. El stub (`stubs/app/pagos.py`) queda como referencia y ya no está en el compose.
 
 **`POST /cobros`** — paso 2 de la Saga, idempotente por `cobro_id` (= `saga_id`):
 
