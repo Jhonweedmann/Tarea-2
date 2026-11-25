@@ -76,7 +76,8 @@
             ]
           },
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "green"
           }
         },
         "overrides": []
