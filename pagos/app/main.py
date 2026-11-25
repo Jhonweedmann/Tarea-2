@@ -154,6 +154,8 @@ def reembolsar(cobro_id: str, request: Request):
 
 @app.get("/cobros")
 def listar(request: Request, estudiante_id: str = Query(min_length=1)):
-    filas = request.app.state.db.execute(
-        "SELECT * FROM cobros WHERE estudiante_id=? ORDER BY creado_en, cobro_id", (estudiante_id,))
+    # También bajo el lock: la conexión SQLite es compartida y no admite uso simultáneo entre hilos.
+    with request.app.state.lock:
+        filas = request.app.state.db.execute(
+            "SELECT * FROM cobros WHERE estudiante_id=? ORDER BY creado_en, cobro_id", (estudiante_id,)).fetchall()
     return {"items": [representacion(fila) for fila in filas]}
