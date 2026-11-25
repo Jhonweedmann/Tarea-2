@@ -173,3 +173,4 @@ volumes:
   cupos_data:
   inscripcion_data:
   orquestador_data:
+  pagos_data:

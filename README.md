@@ -53,8 +53,8 @@ Contrato completo: [docs/contratos/gateway.md](docs/contratos/gateway.md).
 | `portal-web` | `portal-web` | escritura | 20 / 10 s |
 | `carga-experimentos` | `experimentos` | escritura | 100 000 / 10 s (pruebas de carga) |
 
-El estudiante `est-001` (Ana Pérez) viene precargado en Inscripción, y el stub de Pagos trae un
-cobro de ejemplo para él, así el panel tiene datos desde el inicio. Cursos: `ARQ-101` (2 cupos),
+El estudiante `est-001` (Ana Pérez) viene precargado en Inscripción, y Pagos trae un cobro de
+ejemplo para él, así el panel tiene datos desde el inicio. Cursos: `ARQ-101` (2 cupos),
 `API-201` (1), `DAT-110` (3) e `INT-301` (30, para repetir los escenarios en la demo).
 
 Todas las solicitudes del repo también están en [request.http](request.http) (extensión REST
@@ -95,8 +95,8 @@ docker compose start pagos
 Pagos lento en vez de caído (el panel igual responde en ~2 s, el tiempo máximo del BFF):
 
 ```bash
-docker compose exec pagos python -c "import httpx; print(httpx.post('http://localhost:8000/admin/falla', json={'latencia_ms': 5000}).json())"
-docker compose exec pagos python -c "import httpx; print(httpx.post('http://localhost:8000/admin/falla', json={'latencia_ms': 0, 'caido': False}).json())"
+python scripts/demo.py falla lento     # Pagos tarda 5 s por llamada
+python scripts/demo.py falla sano      # vuelve a la normalidad
 ```
 
 **Trazar una solicitud por todos los servicios** con su `X-Correlation-Id` (logs JSON):
@@ -193,27 +193,29 @@ guarda en `docs/resultados/` los datos crudos (`escenario3-*.json`), un gráfico
 comparación (`escenario3-comparacion.md`). Detalle y cómo leer la evidencia:
 [experimentos/README.md](experimentos/README.md).
 
-**Para hacerlo a mano** (por ejemplo durante el video), con Grafana abierto en http://localhost:3000:
+**Para hacerlo a mano** (por ejemplo durante el video), con Grafana abierto en http://localhost:3000.
+`scripts/demo.py` da comandos cortos que funcionan igual en Linux, macOS y Windows:
 
 ```bash
-# 1. Pagos lento: 5 s por llamada
-docker compose exec pagos python -c "import httpx; print(httpx.post('http://localhost:8000/admin/falla', json={'latencia_ms': 5000}).json())"
-# 2. Pagos caído (503)
-docker compose exec pagos python -c "import httpx; print(httpx.post('http://localhost:8000/admin/falla', json={'latencia_ms': 0, 'caido': True}).json())"
-# 3. Recuperación
-docker compose exec pagos python -c "import httpx; print(httpx.post('http://localhost:8000/admin/falla', json={'caido': False}).json())"
-# Matrícula (observar el tiempo de respuesta y el Retry-After)
-curl -s -o /dev/null -w "%{http_code} en %{time_total}s\n" -X POST localhost:8080/api/v1/matriculas \
-  -H "Authorization: Bearer desarrollo-seguro" -H "Content-Type: application/json" \
-  -d '{"estudiante_id":"est-001","curso_id":"INT-301"}'
-# Estado del circuito y del bulkhead (métricas internas del orquestador)
-docker compose exec orquestador python -c "import urllib.request as u; print(''.join(l for l in u.urlopen('http://localhost:8000/metrics').read().decode().splitlines(True) if l.startswith(('circuit_','bulkhead_','pagos_llamadas'))))"
+python scripts/demo.py metricas            # circuit_state, bulkhead y llamadas a Pagos (línea base: CERRADO)
+python scripts/demo.py matricular          # una matrícula con alumno nuevo: código, tiempo y Retry-After
+python scripts/demo.py falla lento         # Pagos tarda 5 s por llamada
+python scripts/demo.py rafaga --n 25       # 25 matrículas simultáneas + una sonda de GET /cursos al lado
+python scripts/demo.py metricas            # circuito ABIERTO, bulkhead rechazando
+python scripts/demo.py matricular --pagos-roto   # fail-fast: 503 + Retry-After en decenas de ms
+python scripts/demo.py falla caido         # Pagos responde 503
+python scripts/demo.py falla sano          # Pagos vuelve; esperar ~6 s
+python scripts/demo.py matricular          # repetir dos veces: el circuito pasa por half-open y cierra
+python scripts/demo.py metricas            # circuito CERRADO otra vez
 ```
 
 Qué esperar con los patrones puestos: la primera ráfaga contra el Pagos lento agota 2 s de timeout y
 el circuito abre; desde entonces cada matrícula responde en decenas de milisegundos con `503` +
 `Retry-After`, el cupo queda liberado, y `GET /cursos`, `GET /sagas/{id}` y el panel siguen rápidos.
 Al volver Pagos, el circuito pasa por half-open y cierra, y el worker termina las compensaciones pendientes.
+
+Nota: `INT-301` tiene 30 cupos; la ráfaga pide menos de 30 a propósito. Para repetir la demo desde
+cero, `docker compose down -v && docker compose up -d`.
 
 ## Observabilidad
 
@@ -277,3 +279,8 @@ el código generado, ejecutar pruebas y explicar las decisiones y resultados de 
   de Cupos, el refactor de Matrículas a Inscripción, el orquestador (Saga, Idempotency-Key y
   worker), el script de escenarios, ADR-007 y los diagramas. Se verificó con las pruebas
   automáticas (`tests/`) y ejecutando los escenarios contra el sistema completo en Docker.
+- **Parte de C (Pagos y resiliencia):** se usó Claude (Anthropic) para implementar el servicio de
+  Pagos, el circuit breaker y el bulkhead, el cliente de Pagos con reintento y fallback, el
+  experimento del escenario 3, `scripts/demo.py` y ADR-008. Se verificó con las pruebas
+  automáticas (`tests/test_pagos.py`, `tests/test_resiliencia.py`) y ejecutando el experimento
+  contra el sistema completo.
