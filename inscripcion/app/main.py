@@ -42,8 +42,9 @@ async def lifespan(app: FastAPI):
     app.state.db = connect(DB_PATH)
     if SEMILLA:
         seed(app.state.db)
-    # FastAPI atiende los endpoints sincronos en varios hilos. Este lock hace que "leer si ya
-    # existe y luego escribir" sea atomico en inscribir y dar de baja (sin carreras entre reintentos).
+    # FastAPI atiende los endpoints sincronos en varios hilos y todos comparten esta conexion
+    # SQLite, que no admite uso simultaneo: todo acceso a la BD pasa por este lock. Ademas hace
+    # que "leer si ya existe y luego escribir" sea atomico en inscribir y dar de baja.
     app.state.lock = threading.Lock()
     yield
     app.state.db.close()
@@ -134,11 +135,14 @@ def contrato_yaml():
 @app.post("/estudiantes", status_code=status.HTTP_201_CREATED, tags=["estudiantes"])
 def crear_estudiante(payload: EstudianteIn, request: Request, response: Response):
     estudiante = {"id": str(uuid.uuid4()), "nombre": payload.nombre, "email": str(payload.email)}
-    try:
-        request.app.state.db.execute("INSERT INTO estudiantes VALUES (:id, :nombre, :email)", estudiante)
-        request.app.state.db.commit()
-    except sqlite3.IntegrityError:
-        raise Problema(409, "Correo duplicado", "Ya existe un estudiante con ese correo.")
+    db = request.app.state.db
+    with request.app.state.lock:
+        try:
+            db.execute("INSERT INTO estudiantes VALUES (:id, :nombre, :email)", estudiante)
+            db.commit()
+        except sqlite3.IntegrityError:
+            db.rollback()
+            raise Problema(409, "Correo duplicado", "Ya existe un estudiante con ese correo.")
     # Ruta interna: el gateway la traduce a /api/v1/estudiantes/{id}.
     response.headers["Location"] = f"/estudiantes/{estudiante['id']}"
     return estudiante
@@ -146,12 +150,14 @@ def crear_estudiante(payload: EstudianteIn, request: Request, response: Response
 
 @app.get("/estudiantes", tags=["estudiantes"])
 def listar_estudiantes(request: Request, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)):
-    return pagina(request.app.state.db, "estudiantes", "nombre, id", limit, offset)
+    with request.app.state.lock:
+        return pagina(request.app.state.db, "estudiantes", "nombre, id", limit, offset)
 
 
 @app.get("/estudiantes/{estudiante_id}", tags=["estudiantes"])
 def consultar_estudiante(estudiante_id: str, request: Request):
-    row = request.app.state.db.execute("SELECT * FROM estudiantes WHERE id=?", (estudiante_id,)).fetchone()
+    with request.app.state.lock:
+        row = request.app.state.db.execute("SELECT * FROM estudiantes WHERE id=?", (estudiante_id,)).fetchone()
     if not row:
         raise Problema(404, "Estudiante no encontrado", "No existe un estudiante con ese id.")
     return dict(row)
@@ -234,14 +240,17 @@ def dar_baja(inscripcion_id: str, request: Request):
 
 @app.get("/inscripciones", tags=["inscripciones"])
 def listar_inscripciones(request: Request, estudiante_id: str = Query(min_length=1)):
-    filas = request.app.state.db.execute(
-        "SELECT * FROM inscripciones WHERE estudiante_id=? ORDER BY creada_en, inscripcion_id", (estudiante_id,))
+    with request.app.state.lock:
+        filas = request.app.state.db.execute(
+            "SELECT * FROM inscripciones WHERE estudiante_id=? ORDER BY creada_en, inscripcion_id",
+            (estudiante_id,)).fetchall()
     return {"items": [representacion_inscripcion(fila) for fila in filas]}
 
 
 @app.get("/inscripciones/{inscripcion_id}", tags=["inscripciones"])
 def consultar_inscripcion(inscripcion_id: str, request: Request):
-    row = buscar_inscripcion(request.app.state.db, inscripcion_id)
+    with request.app.state.lock:
+        row = buscar_inscripcion(request.app.state.db, inscripcion_id)
     if row is None:
         raise Problema(404, "Inscripción no encontrada", "No existe una inscripción con ese id.")
     return representacion_inscripcion(row)
